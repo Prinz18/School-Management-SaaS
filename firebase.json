@@ -1,0 +1,35 @@
+{
+  "hosting": {
+    "target": "main",
+    "public": "dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "database": {
+    "rules": "database.rules.json"
+  },
+  "functions": {
+    "source": "functions",
+    "runtime": "nodejs22"
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "extensions": {
+    "delete-user-data": "firebase/delete-user-data@0.1.29",
+    "storage-resize-images": "firebase/storage-resize-images@0.3.5",
+    "firestore-multimodal-genai": "googlecloud/firestore-multimodal-genai@1.0.5"
+  }
+}

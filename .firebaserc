@@ -1,0 +1,19 @@
+{
+  "projects": {
+    "default": "prinz-08ee97cc"
+  },
+  "targets": {
+    "prinz-08ee97cc": {
+      "hosting": {
+        "main": [
+          "liberias-schools-portal"
+        ]
+      }
+    }
+  },
+  "etags": {
+    "prinz-08ee97cc": {
+      "extensionInstances": {}
+    }
+  }
+}

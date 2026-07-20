@@ -1,0 +1,30 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Build outputs
+dist/
+build/
+bin/
+out/
+lib/
+
+# Firebase cache / log
+.firebase/
+*-debug.log
+*.log
+
+# Gradle and Android build files (for native-mobile)
+.gradle/
+local.properties
+*.apk
+*.aar
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.*
+!.env.example

@@ -1,0 +1,165 @@
+// Firestore Security Rules for Liberia Schools Portal (Spark/Blaze Plan)
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // HELPER FUNCTIONS
+    // ==========================================
+    
+    // Get caller profile from the global users routing directory
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Check if the caller profile exists
+    function userProfileExists() {
+      return request.auth != null && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // Check if the caller has a specific platform role
+    function hasRole(role) {
+      return userProfileExists() && getUserData().role == role;
+    }
+    
+    // Check if the caller is assigned to a specific school (compares school slugs)
+    function isMemberOfSchool(schoolId) {
+      return userProfileExists() && getUserData().schoolId == schoolId;
+    }
+
+    // ==========================================
+    // GLOBAL ROUTING POINTERS (USER INDEX)
+    // ==========================================
+    match /users/{userId} {
+      // Rule 1: Always allow users to read/write their own profile pointer securely
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      // Rule 2: Administrative / School-wide access
+      allow read: if request.auth != null && (
+        hasRole('superadmin') || 
+        (resource != null && resource.data != null && isMemberOfSchool(resource.data.schoolId))
+      );
+      
+      allow create: if request.auth != null && (
+        hasRole('superadmin') || 
+        ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(request.resource.data.schoolId))
+      );
+                       
+      allow update: if request.auth != null && (
+        hasRole('superadmin') || 
+        ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(resource.data.schoolId))
+      );
+                       
+      allow delete: if request.auth != null && (
+        hasRole('superadmin') || 
+        (hasRole('schooladmin') && isMemberOfSchool(resource.data.schoolId))
+      );
+    }
+
+    // ==========================================
+    // SCHOOL COLLECTIONS & NESTED SUBCOLLECTIONS (TENANT ISOLATED)
+    // ==========================================
+    match /schools/{schoolId} {
+      allow read: if request.auth != null && (
+        hasRole('superadmin') || 
+        isMemberOfSchool(schoolId)
+      );
+      allow create: if request.auth != null && hasRole('superadmin');
+      // Allow superadmins or schooladmins/registrars belonging to this school slug
+      allow update: if request.auth != null && (
+        hasRole('superadmin') || 
+        ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+      );
+      allow delete: if request.auth != null && hasRole('superadmin');
+
+      // ------------------------------------------
+      // A. Tenant User Profiles (nested users)
+      // ------------------------------------------
+      match /users/{userId} {
+        // Rule 1: Always allow reading/writing their own profile securely
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+        
+        // Rule 2: Administrative / School-wide access
+        allow read: if request.auth != null && (
+          hasRole('superadmin') || 
+          isMemberOfSchool(schoolId)
+        );
+        
+        allow create, update: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+                         
+        allow delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          (hasRole('schooladmin') && isMemberOfSchool(schoolId))
+        );
+      }
+
+      // ------------------------------------------
+      // B. Classrooms (nested classes)
+      // ------------------------------------------
+      match /classes/{classId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      // ------------------------------------------
+      // C. Curriculum Subjects (nested subjects)
+      // ------------------------------------------
+      match /subjects/{subjectId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      // ------------------------------------------
+      // D. Teacher Assignments (nested assignments)
+      // ------------------------------------------
+      match /assignments/{assignmentId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      // ------------------------------------------
+      // E. Student Grades (nested grades)
+      // ------------------------------------------
+      match /grades/{gradeId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('teacher') || hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      // ------------------------------------------
+      // F. Attendance Registries (nested attendance)
+      // ------------------------------------------
+      match /attendance/{attendanceId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('teacher') || hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+    }
+
+    // ==========================================
+    // AUDITING & SECURITY EVENT LOGS
+    // ==========================================
+    match /security_logs/{logId} {
+      allow create: if true; // Allow failed login attempts to audit
+      allow read, update, delete: if request.auth != null && hasRole('superadmin');
+    }
+  }
+}
