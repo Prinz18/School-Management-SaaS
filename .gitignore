@@ -3,11 +3,11 @@ node_modules/
 jspm_packages/
 
 # Build outputs
-dist/
+/dist/
 build/
 bin/
 out/
-lib/
+/functions/lib/
 
 # Firebase cache / log
 .firebase/
