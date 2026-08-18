@@ -1,18 +1,6 @@
 // src/services/userService.ts
-import { db, app } from '../lib/firebaseConfig';
-import { 
-  doc, 
-  setDoc, 
-  getDoc, 
-  updateDoc, 
-  deleteDoc, 
-  collection, 
-  query, 
-  where, 
-  getDocs, 
-  onSnapshot, 
-  serverTimestamp 
-} from 'firebase/firestore';
+import { app } from '../lib/firebaseConfig';
+import { dbAdapter } from '../lib/dbAdapter';
 import { getAuth, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { storageService } from './storageService';
@@ -38,6 +26,7 @@ export interface UserData {
   guardianName?: string;
   guardianContact?: string;
   passportPhoto?: string | null;
+  passportPhotoPath?: string | null;
 }
 
 export const userService = {
@@ -45,21 +34,11 @@ export const userService = {
    * Subscribes to all active users with role 'schooladmin' across the platform.
    */
   subscribeToSchoolAdmins: (onUpdate: (admins: UserData[]) => void): (() => void) => {
-    const usersRef = collection(db, 'users');
-    const q = query(usersRef, where('role', '==', 'schooladmin'));
-
-    return onSnapshot(q, (snapshot) => {
-      const adminList: UserData[] = [];
-      snapshot.forEach(docSnap => {
-        const admin = docSnap.data() as UserData;
-        if (admin.status !== 'inactive') {
-          adminList.push({ ...admin, id: docSnap.id });
-        }
-      });
+    return dbAdapter.subscribeToPath('users', (users) => {
+      const adminList = users
+        .filter(u => u.role === 'schooladmin' && u.status !== 'inactive')
+        .map(u => u as UserData);
       onUpdate(adminList);
-    }, (error) => {
-      console.error("Error in subscribeToSchoolAdmins:", error);
-      onUpdate([]);
     });
   },
 
@@ -67,34 +46,77 @@ export const userService = {
    * Subscribes to all users belonging to a specific school ID.
    */
   subscribeToSchoolUsers: (schoolId: string, onUpdate: (users: UserData[]) => void): (() => void) => {
-    const usersRef = collection(db, 'schools', schoolId, 'users');
-
-    return onSnapshot(usersRef, (snapshot) => {
-      const userList: UserData[] = [];
-      snapshot.forEach(docSnap => {
-        userList.push({ ...docSnap.data() as UserData, id: docSnap.id });
-      });
-      onUpdate(userList);
-    }, (error) => {
-      console.error("Error in subscribeToSchoolUsers:", error);
-      onUpdate([]);
+    return dbAdapter.subscribeToPath(`schools/${schoolId}/users`, (users) => {
+      onUpdate(users as UserData[]);
     });
+  },
+
+  /**
+   * Subscribes to all users across all schools. Each user is tagged with their schoolId and schoolName.
+   * Used by the Agent (superadmin) password recovery panel.
+   */
+  subscribeToAllSchoolUsers: (onUpdate: (users: (UserData & { schoolName?: string })[]) => void): (() => void) => {
+    let allUsers: (UserData & { schoolName?: string })[] = [];
+    const schoolUnsubMap = new Map<string, () => void>();
+    let schoolsUnsub: (() => void) | null = null;
+
+    const notifyUpdate = () => {
+      onUpdate([...allUsers]);
+    };
+
+    schoolsUnsub = dbAdapter.subscribeToPath('schools', (schools) => {
+      const currentSchoolIds = new Set(schools.map(s => s.schoolId || s.id));
+
+      // Remove listeners for deleted schools
+      schoolUnsubMap.forEach((unsub, schoolId) => {
+        if (!currentSchoolIds.has(schoolId)) {
+          unsub();
+          schoolUnsubMap.delete(schoolId);
+          allUsers = allUsers.filter(u => u.schoolId !== schoolId);
+        }
+      });
+
+      // Add listeners for new schools
+      schools.forEach((school) => {
+        const schoolId = school.schoolId || school.id;
+        if (!schoolUnsubMap.has(schoolId)) {
+          const unsub = dbAdapter.subscribeToPath(`schools/${schoolId}/users`, (users) => {
+            // Remove old users from this school
+            allUsers = allUsers.filter(u => u.schoolId !== schoolId);
+            // Add updated users from this school
+            const schoolUsers = (users as UserData[]).map(u => ({
+              ...u,
+              schoolId,
+              schoolName: school.name || schoolId
+            }));
+            allUsers = [...allUsers, ...schoolUsers];
+            notifyUpdate();
+          });
+          schoolUnsubMap.set(schoolId, unsub);
+        }
+      });
+
+      notifyUpdate();
+    });
+
+    return () => {
+      if (schoolsUnsub) schoolsUnsub();
+      schoolUnsubMap.forEach(unsub => unsub());
+      schoolUnsubMap.clear();
+    };
   },
 
   /**
    * Generates the next sequential student ID for a given school ID (e.g., dragons-0001, dragons-0002).
    */
   getNextStudentId: async (schoolId: string): Promise<string> => {
-    const usersRef = collection(db, 'schools', schoolId, 'users');
-    const q = query(usersRef, where('role', '==', 'student'));
-    const snapshot = await getDocs(q);
+    const schoolUsers = await dbAdapter.getDocsByQuery(`schools/${schoolId}/users`, 'role', 'student');
     
     let maxNum = 0;
     const prefix = `${schoolId.toLowerCase()}-`;
     
-    snapshot.forEach(docSnap => {
-      const data = docSnap.data();
-      const sId = data.studentId;
+    schoolUsers.forEach(u => {
+      const sId = u.studentId;
       if (sId && typeof sId === 'string') {
         const sIdLower = sId.toLowerCase();
         if (sIdLower.startsWith(prefix)) {
@@ -123,7 +145,6 @@ export const userService = {
     studentIdInput?: string,
     customPassword?: string
   ): Promise<{ uid: string; defaultPassword: string }> => {
-    // 1. Determine final studentId and email
     let finalStudentId = studentIdInput?.trim() || "";
     if (role === 'student') {
       if (!finalStudentId || finalStudentId.startsWith('STU-') || !finalStudentId.includes('-')) {
@@ -137,37 +158,24 @@ export const userService = {
     }
     if (!finalEmail) throw new Error("Email is required.");
 
-    // 2. Generate/Determine Password
     const firstName = name.split(' ')[0].replace(/[^a-zA-Z]/g, '');
     const defaultPassword = customPassword || `${schoolId.toUpperCase()}-${firstName}`;
 
-    // 3. Initialize Secondary Firebase App instance
     const secondaryAppName = `UserCreation-${Date.now()}`;
     const secondaryApp = initializeApp(app.options, secondaryAppName);
     const secondaryAuth = getAuth(secondaryApp);
 
     try {
-      // For schooladmins, determine if they are the main admin of the school
       let isMainAdmin = false;
       if (role === 'schooladmin') {
-        const usersRef = collection(db, 'schools', schoolId, 'users');
-        const snapshot = await getDocs(usersRef);
-        
-        let hasExistingActiveAdmin = false;
-        snapshot.forEach(docSnap => {
-          const u = docSnap.data();
-          if (u.role === 'schooladmin' && u.status === 'active') {
-            hasExistingActiveAdmin = true;
-          }
-        });
-        isMainAdmin = !hasExistingActiveAdmin;
+        const existingUsers = await dbAdapter.getDocsByQuery(`schools/${schoolId}/users`, 'role', 'schooladmin');
+        const hasActiveAdmin = existingUsers.some(u => u.status === 'active');
+        isMainAdmin = !hasActiveAdmin;
       }
 
-      // 4. Create user in Firebase Auth
       const userCredential = await createUserWithEmailAndPassword(secondaryAuth, finalEmail, defaultPassword);
       const uid = userCredential.user.uid;
 
-      // 5. Construct profile data
       const profileData: any = {
         id: uid,
         name,
@@ -175,7 +183,7 @@ export const userService = {
         role,
         schoolId,
         status: 'active',
-        createdAt: new Date().toISOString(),
+        createdAt: Date.now(),
       };
 
       if (role === 'student') {
@@ -184,30 +192,26 @@ export const userService = {
       
       if (role === 'schooladmin') {
         profileData.isMainAdmin = isMainAdmin;
-      } else {
-        // Teachers / Students / Registrars get tempPassword for enrollment handoff
-        profileData.tempPassword = defaultPassword;
-        profileData.password = defaultPassword;
-        profileData.requirePasswordChange = true;
       }
+      
+      profileData.tempPassword = defaultPassword;
+      profileData.password = defaultPassword;
+      profileData.requirePasswordChange = true;
 
       // Save to global pointer doc
-      const globalRef = doc(db, 'users', uid);
-      await setDoc(globalRef, {
+      await dbAdapter.setDoc(`users/${uid}`, {
         id: uid,
         name,
         email: finalEmail,
         role,
         schoolId,
         status: 'active',
-        createdAt: serverTimestamp()
+        createdAt: Date.now()
       });
 
       // Save to school node subcollection
-      const schoolUserRef = doc(db, 'schools', schoolId, 'users', uid);
-      await setDoc(schoolUserRef, profileData);
+      await dbAdapter.setDoc(`schools/${schoolId}/users/${uid}`, profileData);
 
-      // 6. Cleanup secondary auth & app
       await signOut(secondaryAuth);
       await deleteApp(secondaryApp);
 
@@ -224,105 +228,54 @@ export const userService = {
   toggleMainAdmin: async (adminId: string, schoolId: string, currentMainStatus: boolean): Promise<void> => {
     const newStatus = !currentMainStatus;
 
-    // If promoting, we must unset any existing main admin for this school
     if (newStatus) {
-      const usersRef = collection(db, 'schools', schoolId, 'users');
-      const snapshot = await getDocs(usersRef);
-      
-      const promises: Promise<void>[] = [];
-      snapshot.forEach(docSnap => {
-        const u = docSnap.data();
-        if (u.isMainAdmin && docSnap.id !== adminId) {
-          promises.push(updateDoc(doc(db, 'schools', schoolId, 'users', docSnap.id), { isMainAdmin: false }));
-          
-          const globalRef = doc(db, 'users', docSnap.id);
-          promises.push(
-            getDoc(globalRef).then(async (snap) => {
-              if (snap.exists()) {
-                await updateDoc(globalRef, { isMainAdmin: false });
-              }
-            })
-          );
+      const existingUsers = await dbAdapter.getDocsByQuery(`schools/${schoolId}/users`, 'role', 'schooladmin');
+      for (const u of existingUsers) {
+        if (u.isMainAdmin && u.id !== adminId) {
+          await dbAdapter.updateDoc(`schools/${schoolId}/users/${u.id}`, { isMainAdmin: false });
+          await dbAdapter.updateDoc(`users/${u.id}`, { isMainAdmin: false });
         }
-      });
-      
-      if (promises.length > 0) {
-        await Promise.all(promises);
       }
     }
 
-    // Set the new status for the target admin
-    const globalAdminRef = doc(db, 'users', adminId);
-    const globalAdminSnap = await getDoc(globalAdminRef);
-    if (globalAdminSnap.exists()) {
-      await updateDoc(globalAdminRef, { isMainAdmin: newStatus });
-    }
-
-    const schoolAdminRef = doc(db, 'schools', schoolId, 'users', adminId);
-    const schoolAdminSnap = await getDoc(schoolAdminRef);
-    if (schoolAdminSnap.exists()) {
-      await updateDoc(schoolAdminRef, { isMainAdmin: newStatus });
-    } else if (globalAdminSnap.exists()) {
-      const globalAdminData = globalAdminSnap.data();
-      await setDoc(schoolAdminRef, { ...globalAdminData, isMainAdmin: newStatus });
-    }
+    await dbAdapter.updateDoc(`users/${adminId}`, { isMainAdmin: newStatus });
+    await dbAdapter.updateDoc(`schools/${schoolId}/users/${adminId}`, { isMainAdmin: newStatus });
   },
 
   /**
-   * Assigns a school administrator to a school node in Firestore.
+   * Assigns a school administrator to a school node.
    */
   assignSchoolNode: async (adminId: string, targetSchoolId: string): Promise<void> => {
-    const userRef = doc(db, 'users', adminId);
-    const snap = await getDoc(userRef);
-    if (!snap.exists()) {
-      console.warn(`User document with ID ${adminId} does not exist globally.`);
+    const globalRes = await dbAdapter.getDoc(`users/${adminId}`);
+    if (!globalRes.exists) {
+      console.warn(`User node ${adminId} does not exist globally.`);
       return;
     }
-    const currentData = snap.data();
+    const currentData = globalRes.data;
     const oldSchoolId = currentData?.schoolId;
 
-    const usersRef = collection(db, 'schools', targetSchoolId, 'users');
-    const snapshot = await getDocs(usersRef);
-    
-    let hasMainAdmin = false;
-    snapshot.forEach(docSnap => {
-      const u = docSnap.data();
-      if (u.isMainAdmin === true && u.status === 'active') {
-        hasMainAdmin = true;
-      }
-    });
+    const existingAdmins = await dbAdapter.getDocsByQuery(`schools/${targetSchoolId}/users`, 'role', 'schooladmin');
+    const hasMainAdmin = existingAdmins.some(u => u.isMainAdmin === true && u.status === 'active');
 
-    const updates: any = { schoolId: targetSchoolId };
-    if (!hasMainAdmin) {
-      updates.isMainAdmin = true;
-    } else {
-      updates.isMainAdmin = false;
-    }
+    const updates: any = { schoolId: targetSchoolId, isMainAdmin: !hasMainAdmin };
 
-    // Update global pointer
-    await updateDoc(userRef, updates);
+    await dbAdapter.updateDoc(`users/${adminId}`, updates);
 
-    // Delete old school document if it existed
     if (oldSchoolId) {
-      await deleteDoc(doc(db, 'schools', oldSchoolId, 'users', adminId));
+      await dbAdapter.deleteDoc(`schools/${oldSchoolId}/users/${adminId}`);
     }
 
-    // Save full document to new school subcollection
     const newProfile = { ...(currentData || {}), ...updates };
-    await setDoc(doc(db, 'schools', targetSchoolId, 'users', adminId), newProfile);
+    await dbAdapter.setDoc(`schools/${targetSchoolId}/users/${adminId}`, newProfile);
   },
 
   /**
-   * Terminates access for a school admin/user, updating their status.
+   * Terminates access for a school admin/user.
    */
   terminateAccess: async (userId: string): Promise<void> => {
-    const userRef = doc(db, 'users', userId);
-    const snap = await getDoc(userRef);
-    if (!snap.exists()) {
-      console.warn(`User document with ID ${userId} does not exist globally.`);
-      return;
-    }
-    const userData = snap.data();
+    const globalRes = await dbAdapter.getDoc(`users/${userId}`);
+    if (!globalRes.exists) return;
+    const userData = globalRes.data;
 
     const updates = { 
       status: 'inactive',
@@ -330,92 +283,104 @@ export const userService = {
       isMainAdmin: false
     };
 
-    await updateDoc(userRef, updates);
+    await dbAdapter.updateDoc(`users/${userId}`, updates);
 
     if (userData && userData.schoolId) {
-      const schoolUserRef = doc(db, 'schools', userData.schoolId, 'users', userId);
-      const schoolSnap = await getDoc(schoolUserRef);
-      if (schoolSnap.exists()) {
-        await updateDoc(schoolUserRef, updates);
-      }
+      await dbAdapter.updateDoc(`schools/${userData.schoolId}/users/${userId}`, updates);
     }
   },
 
   updateProfileDetails: async (userId: string, updates: Partial<UserData>): Promise<void> => {
     const finalUpdates = { ...updates };
     
-    // Intercept and upload base64 passportPhoto to Firebase Storage
     if (updates.passportPhoto && updates.passportPhoto.startsWith('data:')) {
       try {
         const extMatch = updates.passportPhoto.match(/data:image\/(.*?);/);
         const ext = extMatch ? extMatch[1] : 'png';
+        const photoPath = `users/${userId}/passport_${Date.now()}.${ext}`;
         
-        finalUpdates.passportPhoto = await storageService.uploadBase64Image(
-          `users/${userId}/passport_${Date.now()}.${ext}`,
-          updates.passportPhoto
-        );
+        finalUpdates.passportPhoto = await storageService.uploadBase64Image(photoPath, updates.passportPhoto);
+        finalUpdates.passportPhotoPath = photoPath;
       } catch (err) {
         console.warn("Skipped storing passport photo to storage, falling back to database storage:", err);
       }
     }
     
-    const userRef = doc(db, 'users', userId);
-    const snap = await getDoc(userRef);
-    if (snap.exists()) {
-      await updateDoc(userRef, finalUpdates);
-      const userData = snap.data();
+    const globalRes = await dbAdapter.getDoc(`users/${userId}`);
+    if (globalRes.exists) {
+      await dbAdapter.updateDoc(`users/${userId}`, finalUpdates);
+      const userData = globalRes.data;
       if (userData && userData.schoolId) {
-        const schoolUserRef = doc(db, 'schools', userData.schoolId, 'users', userId);
-        const schoolSnap = await getDoc(schoolUserRef);
-        if (schoolSnap.exists()) {
-          await updateDoc(schoolUserRef, finalUpdates);
+        const schoolRes = await dbAdapter.getDoc(`schools/${userData.schoolId}/users/${userId}`);
+        if (schoolRes.exists) {
+          await dbAdapter.updateDoc(`schools/${userData.schoolId}/users/${userId}`, finalUpdates);
         } else {
-          await setDoc(schoolUserRef, { ...userData, ...finalUpdates });
+          await dbAdapter.setDoc(`schools/${userData.schoolId}/users/${userId}`, { ...userData, ...finalUpdates });
         }
       }
-    } else {
-      console.warn(`User document with ID ${userId} does not exist globally.`);
+    }
+  },
+
+  deletePassportPhoto: async (userId: string): Promise<void> => {
+    const globalRes = await dbAdapter.getDoc(`users/${userId}`);
+    if (!globalRes.exists) return;
+
+    const userData = globalRes.data as UserData;
+    const photoPath = userData.passportPhotoPath || null;
+
+    if (photoPath) {
+      await storageService.deleteFile(photoPath);
+    }
+
+    const updates = {
+      passportPhoto: null,
+      passportPhotoPath: null
+    };
+
+    await dbAdapter.updateDoc(`users/${userId}`, updates);
+
+    if (userData.schoolId) {
+      const schoolRes = await dbAdapter.getDoc(`schools/${userData.schoolId}/users/${userId}`);
+      if (schoolRes.exists) {
+        await dbAdapter.updateDoc(`schools/${userData.schoolId}/users/${userId}`, updates);
+      }
     }
   },
 
   /**
-   * Retrieves profile details for a specific user ID from Firestore.
+   * Retrieves profile details for a specific user ID.
    */
   getUserProfile: async (userId: string): Promise<UserData | null> => {
     try {
-      const userRef = doc(db, 'users', userId);
-      const snapshot = await getDoc(userRef);
-      if (snapshot.exists()) {
-        const userData = snapshot.data() as UserData;
+      const globalRes = await dbAdapter.getDoc(`users/${userId}`);
+      if (globalRes.exists) {
+        const userData = globalRes.data as UserData;
         if (userData.schoolId && userData.schoolId !== 'system-global') {
-          const schoolUserRef = doc(db, 'schools', userData.schoolId, 'users', userId);
-          const schoolSnap = await getDoc(schoolUserRef);
-          if (schoolSnap.exists()) {
-            return schoolSnap.data() as UserData;
+          const schoolRes = await dbAdapter.getDoc(`schools/${userData.schoolId}/users/${userId}`);
+          if (schoolRes.exists) {
+            return schoolRes.data as UserData;
           }
         }
         return userData;
       }
       return null;
     } catch (err) {
-      console.error("Error fetching user profile from Firestore:", err);
+      console.error("Error fetching user profile:", err);
       return null;
     }
   },
 
   /**
-   * Permanently deletes a user's database profile from Firestore.
+   * Permanently deletes a user profile.
    */
   deleteUserProfile: async (userId: string): Promise<void> => {
-    const userRef = doc(db, 'users', userId);
-    const snap = await getDoc(userRef);
-    const userData = snap.exists() ? snap.data() : null;
+    const globalRes = await dbAdapter.getDoc(`users/${userId}`);
+    const userData = globalRes.exists ? globalRes.data : null;
 
-    await deleteDoc(userRef);
+    await dbAdapter.deleteDoc(`users/${userId}`);
 
     if (userData && userData.schoolId) {
-      const schoolUserRef = doc(db, 'schools', userData.schoolId, 'users', userId);
-      await deleteDoc(schoolUserRef);
+      await dbAdapter.deleteDoc(`schools/${userData.schoolId}/users/${userId}`);
     }
   }
 };
