@@ -138,10 +138,10 @@ const LoginPage: React.FC = () => {
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-slate-100 p-4 font-sans">
-      <div className="bg-white p-8 md:p-10 rounded-[2.5rem] shadow-2xl w-full max-w-md border border-slate-100">
+      <div className="bg-white p-5 sm:p-8 md:p-10 rounded-3xl sm:rounded-[2.5rem] shadow-2xl w-full max-w-md border border-slate-100">
         
         {/* Role Selector Tabs */}
-        <div className="grid grid-cols-4 gap-2 mb-8">
+        <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-8">
           {ROLES.map((role) => {
             const Icon = role.icon;
             const isActive = activeTab === role.id;

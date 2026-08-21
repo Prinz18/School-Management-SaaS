@@ -233,7 +233,7 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({ userId, userRole }) =
                 <h4 className="font-bold text-red-900 mb-1 text-sm">Danger Zone: Permanent Account Deletion</h4>
                 <p className="text-red-700 text-xs leading-relaxed font-medium">
                   Deleting your account will permanently remove your personal profile and system access. 
-                  <span className="block mt-2 font-black">Note: All schools and school administrators you have provisioned will remain active in the global infrastructure.</span>
+                  <span className="block mt-2 font-black">Note: All schools and school administrators you have added will remain active in the system.</span>
                 </p>
               </div>
             </div>

@@ -2,10 +2,12 @@
 import React from 'react';
 import { Award, Calendar, ClipboardCheck, BookOpen, Settings, MessageSquare, Loader2, AlertCircle } from 'lucide-react';
 import { DashboardLayout, type TabItem } from '../components/common/DashboardLayout';
+import SupportHistory from '../components/common/SupportHistory';
 import StudentReportCard from '../components/grade/StudentReportCard';
 import AttendanceViewer from '../components/attendance/AttendanceViewer';
 import AccountSettings from '../components/user/AccountSettings';
 import { academicService, type AssignmentData } from '../services/academicService';
+import { schoolService } from '../services/schoolService';
 
 interface StudentDashboardProps {
   profile: any;
@@ -16,6 +18,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ profile }) => {
   const [classroomName, setClassroomName] = React.useState<string | null>(null);
   const [classAssignments, setClassAssignments] = React.useState<AssignmentData[]>([]);
   const [loadingAcademics, setLoadingAcademics] = React.useState(true);
+  const [academicYear, setAcademicYear] = React.useState('');
 
   const studentId = profile.id;
   const schoolId = profile.schoolId;
@@ -23,6 +26,9 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ profile }) => {
   React.useEffect(() => {
     if (schoolId) {
       setLoadingAcademics(true);
+      schoolService.getSchoolBySlug(schoolId).then((school) => {
+        setAcademicYear(school?.currentAcademicYear || school?.academicYears?.[0] || '');
+      }).catch(() => {});
       
       const unsubClasses = academicService.subscribeToSchoolClasses(schoolId, (classList) => {
         const myClass = classList.find(c => c.id === profile.classId);
@@ -31,13 +37,13 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ profile }) => {
         } else {
           setClassroomName(null);
         }
-      });
+      }, academicYear);
 
       const unsubAssignments = academicService.subscribeToSchoolAssignments(schoolId, (assignmentList) => {
         const filtered = assignmentList.filter(a => a.classId === profile.classId);
         setClassAssignments(filtered);
         setLoadingAcademics(false);
-      });
+      }, academicYear);
 
       return () => {
         unsubClasses();
@@ -53,6 +59,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ profile }) => {
     { id: 'attendance', label: 'Attendance', icon: <ClipboardCheck className="w-5 h-5" /> },
     { id: 'curriculum', label: 'Curriculum', icon: <BookOpen className="w-5 h-5" /> },
     { id: 'schedule', label: 'Timetable', icon: <Calendar className="w-5 h-5" /> },
+    { id: 'support', label: 'Support', icon: <MessageSquare className="w-5 h-5" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="w-5 h-5" /> },
   ];
 
@@ -77,6 +84,11 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ profile }) => {
         return {
           title: 'Timetable & Calendar',
           subtitle: 'Weekly lecture schedule and time blocks.'
+        };
+      case 'support':
+        return {
+          title: 'Support History',
+          subtitle: 'Track your messages, replies, and resolution updates.'
         };
       case 'settings':
       default:
@@ -123,13 +135,19 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ profile }) => {
       ) : (
         <div className="space-y-6">
           {activeTab === 'grades' && (
-            <StudentReportCard 
-              studentId={studentId} 
-              schoolId={schoolId} 
-              studentName={profile.name}
-              schoolName={profile.schoolName}
-              classroomName={classroomName || undefined}
-            />
+            <div className="space-y-3">
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+                Your gradesheet can be downloaded from the button in the report card header.
+              </div>
+              <StudentReportCard 
+                studentId={studentId} 
+                schoolId={schoolId} 
+                studentName={profile.name}
+                schoolName={profile.schoolName}
+                classroomName={classroomName || undefined}
+                academicYear={academicYear}
+              />
+            </div>
           )}
 
           {activeTab === 'attendance' && <AttendanceViewer studentId={studentId} schoolId={schoolId} />}
@@ -175,8 +193,12 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({ profile }) => {
             <div className="bg-white p-12 rounded-[2rem] shadow-xl shadow-slate-200/50 border border-slate-100 text-center py-20">
               <Calendar className="w-16 h-16 text-slate-200 mx-auto mb-4" />
               <h2 className="text-xl font-bold mb-2">Class Timetable</h2>
-              <p className="text-slate-500 font-medium">Weekly timetables are currently under generation by the node manager.</p>
+              <p className="text-slate-500 font-medium">Weekly timetables are currently being prepared by the school office.</p>
             </div>
+          )}
+
+          {activeTab === 'support' && (
+            <SupportHistory userId={studentId} schoolId={schoolId} userName={profile.name} />
           )}
 
           {activeTab === 'settings' && <AccountSettings userId={studentId} userRole={profile.role} />}

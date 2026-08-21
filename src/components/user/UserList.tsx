@@ -17,10 +17,13 @@ const UserList: React.FC<UserListProps> = ({ schoolId, currentUserProfile }) => 
   const [classes, setClasses] = useState<{ id: string; name: string }[]>([]);
   const [selectedClassId, setSelectedClassId] = useState('');
   const [activeCategory, setActiveCategory] = useState<'all' | 'schooladmin' | 'teacher' | 'registrar' | 'student'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
 
   const counts = useMemo(() => {
     return {
       all: users.length,
+      active: users.filter(u => u.status === 'active').length,
+      inactive: users.filter(u => u.status === 'inactive').length,
       schooladmin: users.filter(u => u.role === 'schooladmin').length,
       teacher: users.filter(u => u.role === 'teacher').length,
       registrar: users.filter(u => u.role === 'registrar').length,
@@ -33,18 +36,19 @@ const UserList: React.FC<UserListProps> = ({ schoolId, currentUserProfile }) => 
     if (activeCategory !== 'all') {
       result = users.filter(u => u.role === activeCategory);
     }
+    if (statusFilter !== 'all') {
+      result = result.filter(u => u.status === statusFilter);
+    }
     if (activeCategory === 'student' && selectedClassId) {
       result = result.filter(u => u.classId === selectedClassId);
     }
     return result;
-  }, [users, activeCategory, selectedClassId]);
+  }, [users, activeCategory, selectedClassId, statusFilter]);
 
   useEffect(() => {
     const unsubscribeUsers = userService.subscribeToSchoolUsers(schoolId, (userList) => {
-      const activeSortedList = userList
-        .filter((user: any) => user.status !== 'inactive')
-        .sort((a: any, b: any) => b.createdAt - a.createdAt);
-      setUsers(activeSortedList);
+      const sortedList = [...userList].sort((a: any, b: any) => b.createdAt - a.createdAt);
+      setUsers(sortedList);
       setLoading(false);
     });
 
@@ -132,6 +136,39 @@ const UserList: React.FC<UserListProps> = ({ schoolId, currentUserProfile }) => 
         </div>
         
         <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap gap-2">
+            {[
+              { id: 'all', label: 'All Status', count: counts.all, color: 'slate' },
+              { id: 'active', label: 'Active', count: counts.active, color: 'emerald' },
+              { id: 'inactive', label: 'Inactive', count: counts.inactive, color: 'amber' }
+            ].map(tab => {
+              const isActive = statusFilter === tab.id;
+              const activeColorClasses: Record<string, string> = {
+                slate: 'bg-slate-50 text-slate-700 border-slate-200 shadow-sm',
+                emerald: 'bg-emerald-50 text-emerald-600 border-emerald-200 shadow-sm',
+                amber: 'bg-amber-50 text-amber-600 border-amber-200 shadow-sm',
+              };
+              const activeBadgeClasses: Record<string, string> = {
+                slate: 'bg-slate-100',
+                emerald: 'bg-emerald-100',
+                amber: 'bg-amber-100',
+              };
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setStatusFilter(tab.id as any)}
+                  className={`px-3 py-1.5 rounded-xl font-black text-[10px] uppercase tracking-wider transition border ${
+                    isActive
+                      ? activeColorClasses[tab.color]
+                      : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  {tab.label} <span className={`ml-1 text-[9px] font-black px-1.5 py-0.5 rounded-md ${isActive ? activeBadgeClasses[tab.color] : 'bg-slate-100 text-slate-500'}`}>{tab.count}</span>
+                </button>
+              );
+            })}
+          </div>
+
           {activeCategory === 'student' && classes.length > 0 && (
             <div className="flex items-center gap-2 bg-white px-3 py-1.5 border border-slate-200 rounded-xl shadow-sm">
               <select
@@ -283,18 +320,18 @@ const UserList: React.FC<UserListProps> = ({ schoolId, currentUserProfile }) => 
                            <>
                              <button 
                                onClick={() => handleStatusChange(user.id, user.status)}
-                               className="p-1.5 rounded-xl bg-slate-50 text-slate-400 opacity-0 group-hover:opacity-100 hover:bg-amber-50 hover:text-amber-600 transition"
-                               title={user.status === 'active' ? 'Deactivate User' : 'Reactivate User'}
-                             >
-                               <UserX className="w-4 h-4" />
-                             </button>
-                             <button 
-                               onClick={() => handleDelete(user.id, user.name)}
-                               className="p-1.5 rounded-xl bg-slate-50 text-slate-400 opacity-0 group-hover:opacity-100 hover:bg-red-50 hover:text-red-600 transition"
-                               title="PERMANENTLY Delete Account"
-                             >
-                               <Trash2 className="w-4 h-4" />
-                             </button>
+                             className="p-1.5 rounded-xl bg-slate-50 text-slate-400 hover:bg-amber-50 hover:text-amber-600 transition opacity-100 sm:opacity-70 sm:group-hover:opacity-100"
+                             title={user.status === 'active' ? 'Deactivate User' : 'Reactivate User'}
+                           >
+                             <UserX className="w-4 h-4" />
+                           </button>
+                           <button 
+                             onClick={() => handleDelete(user.id, user.name)}
+                             className="p-1.5 rounded-xl bg-slate-50 text-slate-400 hover:bg-red-50 hover:text-red-600 transition opacity-100 sm:opacity-70 sm:group-hover:opacity-100"
+                             title="PERMANENTLY Delete Account"
+                           >
+                             <Trash2 className="w-4 h-4" />
+                           </button>
                            </>
                          ) : (
                            user.role !== 'student' && (
@@ -359,6 +396,9 @@ const UserList: React.FC<UserListProps> = ({ schoolId, currentUserProfile }) => 
                  </div>
                )}
 
+               <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+                 Use the download button in the report card header to save this gradesheet.
+               </div>
                <StudentReportCard 
                  studentId={selectedStudent.id} 
                  schoolId={schoolId} 

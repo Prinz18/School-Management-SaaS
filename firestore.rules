@@ -1,0 +1,153 @@
+// Firestore Security Rules for Liberia Schools Portal (Spark/Blaze Plan)
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userProfileExists() {
+      return request.auth != null && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function hasRole(role) {
+      return userProfileExists() && getUserData().role == role;
+    }
+    
+    function isMemberOfSchool(schoolId) {
+      return userProfileExists() && getUserData().schoolId == schoolId;
+    }
+
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      allow read: if request.auth != null && (
+        hasRole('superadmin') || 
+        (resource != null && resource.data != null && isMemberOfSchool(resource.data.schoolId))
+      );
+      
+      allow create: if request.auth != null && (
+        hasRole('superadmin') || 
+        ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(request.resource.data.schoolId))
+      );
+                       
+      allow update: if request.auth != null && (
+        hasRole('superadmin') || 
+        ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(resource.data.schoolId))
+      );
+                       
+      allow delete: if request.auth != null && (
+        hasRole('superadmin') || 
+        (hasRole('schooladmin') && isMemberOfSchool(resource.data.schoolId))
+      );
+    }
+
+    match /schools/{schoolId} {
+      allow read: if request.auth != null && (
+        hasRole('superadmin') || 
+        isMemberOfSchool(schoolId)
+      );
+      allow create: if request.auth != null && hasRole('superadmin');
+      allow update: if request.auth != null && (
+        hasRole('superadmin') || 
+        ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+      );
+      allow delete: if request.auth != null && hasRole('superadmin');
+
+      match /users/{userId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+        
+        allow read: if request.auth != null && (
+          hasRole('superadmin') || 
+          isMemberOfSchool(schoolId)
+        );
+        
+        allow create, update: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+                         
+        allow delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          (hasRole('schooladmin') && isMemberOfSchool(schoolId))
+        );
+      }
+
+      match /classes/{classId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      match /registrationInvites/{inviteToken} {
+        allow read: if true;
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') ||
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      match /registrationRequests/{requestId} {
+        allow read: if request.auth != null && (
+          hasRole('superadmin') ||
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+        allow create: if request.resource.data.schoolId == schoolId &&
+          request.resource.data.inviteToken is string &&
+          exists(/databases/$(database)/documents/schools/$(schoolId)/registrationInvites/$(request.resource.data.inviteToken)) &&
+          get(/databases/$(database)/documents/schools/$(schoolId)/registrationInvites/$(request.resource.data.inviteToken)).data.status == 'active' &&
+          (
+            !('expiresAt' in get(/databases/$(database)/documents/schools/$(schoolId)/registrationInvites/$(request.resource.data.inviteToken)).data) ||
+            get(/databases/$(database)/documents/schools/$(schoolId)/registrationInvites/$(request.resource.data.inviteToken)).data.expiresAt == null ||
+            get(/databases/$(database)/documents/schools/$(schoolId)/registrationInvites/$(request.resource.data.inviteToken)).data.expiresAt > request.time.toMillis()
+          );
+        allow update, delete: if request.auth != null && (
+          hasRole('superadmin') ||
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      match /subjects/{subjectId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      match /assignments/{assignmentId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      match /grades/{gradeId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('teacher') || hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+
+      match /attendance/{attendanceId} {
+        allow read: if request.auth != null && (hasRole('superadmin') || isMemberOfSchool(schoolId));
+        allow create, update, delete: if request.auth != null && (
+          hasRole('superadmin') || 
+          ((hasRole('teacher') || hasRole('schooladmin') || hasRole('registrar')) && isMemberOfSchool(schoolId))
+        );
+      }
+    }
+
+    match /security_logs/{logId} {
+      allow create: if true;
+      allow read, update, delete: if request.auth != null && hasRole('superadmin');
+    }
+  }
+}

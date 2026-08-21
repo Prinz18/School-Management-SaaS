@@ -1,8 +1,8 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth, AuthProvider } from './context/AuthContext';
-import { db, auth } from './lib/firebaseConfig';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { auth } from './lib/firebaseConfig';
+import { dbAdapter } from './lib/dbAdapter';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Loading } from './components/common/Loading';
 import { AIAgentWidget } from './components/common/AIAgentWidget';
@@ -15,6 +15,7 @@ import SchoolAdminDashboard from './pages/SchoolAdminDashboard';
 import TeacherDashboard from './pages/TeacherDashboard';
 import StudentDashboard from './pages/StudentDashboard';
 import RegistrarDashboard from './pages/RegistrarDashboard';
+import StudentRegistrationPage from './pages/StudentRegistrationPage';
 
 interface UserProfile {
   role: string;
@@ -41,30 +42,26 @@ const ProtectedRoute: React.FC = () => {
     const fetchProfile = async () => {
       console.log("Fetching profile for UID:", currentUser.uid);
       try {
-        const docRef = doc(db, 'users', currentUser.uid);
-        const snapshot = await getDoc(docRef);
-        if (snapshot.exists()) {
-          const userData = snapshot.data() as UserProfile;
+        const userRes = await dbAdapter.getDoc(`users/${currentUser.uid}`);
+        if (userRes.exists) {
+          const userData = userRes.data as UserProfile;
           console.log("Profile found:", userData);
           
           // Fetch school details if not superadmin
           if (userData.schoolId && userData.schoolId !== 'system-global') {
             console.log("Fetching school details for slug:", userData.schoolId);
-            const schoolDocRef = doc(db, 'schools', userData.schoolId);
-            const schoolSnapshot = await getDoc(schoolDocRef);
+            const schoolRes = await dbAdapter.getDoc(`schools/${userData.schoolId}`);
             
-            if (schoolSnapshot.exists()) {
-              const schoolData = schoolSnapshot.data() as any;
+            if (schoolRes.exists) {
+              const schoolData = schoolRes.data as any;
               userData.schoolName = schoolData.name;
               userData.schoolMotto = schoolData.motto;
             }
 
             // Fetch nested school-specific user profile details and merge them
-            const schoolUserRef = doc(db, 'schools', userData.schoolId, 'users', currentUser.uid);
-            const schoolUserSnapshot = await getDoc(schoolUserRef);
-            if (schoolUserSnapshot.exists()) {
-              const detailedData = schoolUserSnapshot.data();
-              Object.assign(userData, detailedData);
+            const schoolUserRes = await dbAdapter.getDoc(`schools/${userData.schoolId}/users/${currentUser.uid}`);
+            if (schoolUserRes.exists) {
+              Object.assign(userData, schoolUserRes.data);
             }
           }
           
@@ -111,7 +108,7 @@ const ProtectedRoute: React.FC = () => {
   
   if (error) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-red-50 p-4 text-center text-red-800">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-red-50 p-4 text-center text-red-800">
         <h2 className="text-xl font-bold">Error Loading Profile</h2>
         <p>{error}</p>
         <button onClick={() => window.location.reload()} className="mt-4 px-4 py-2 bg-red-600 text-white rounded">Retry</button>
@@ -121,7 +118,7 @@ const ProtectedRoute: React.FC = () => {
 
   if (!profile) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-slate-50 p-4 text-center">
+      <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 p-4 text-center">
         <div className="bg-white p-8 rounded-2xl shadow-xl border border-slate-200 max-w-md">
           <h2 className="text-2xl font-bold text-slate-900 mb-4">Profile Not Found</h2>
           <p className="text-slate-600 mb-6">
@@ -149,8 +146,7 @@ const ProtectedRoute: React.FC = () => {
                     return;
                   }
                   
-                  const userRef = doc(db, 'users', currentUser.uid);
-                  await setDoc(userRef, {
+                  await dbAdapter.setDoc(`users/${currentUser.uid}`, {
                     id: currentUser.uid,
                     name: currentUser.displayName || (finalRole === 'superadmin' ? "Platform Agent" : "System User"),
                     email: currentUser.email,
@@ -204,7 +200,6 @@ const ProtectedRoute: React.FC = () => {
   }
 };
 
-
 function App() {
   return (
     <ErrorBoundary>
@@ -212,9 +207,10 @@ function App() {
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/register/:schoolId/:token" element={<StudentRegistrationPage />} />
           <Route path="/dashboard" element={<ProtectedRoute />} />
           <Route path="*" element={
-            <div className="flex flex-col items-center justify-center h-screen bg-slate-50">
+            <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50">
               <h1 className="text-4xl font-black text-slate-300">404</h1>
               <p className="text-slate-500 mt-2">Page not found</p>
               <a href="/" className="mt-4 text-blue-600 hover:underline">Go Home</a>

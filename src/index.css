@@ -1,5 +1,27 @@
 @import "tailwindcss";
 
+html {
+  min-width: 320px;
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  min-width: 320px;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+img,
+svg,
+video,
+canvas {
+  max-width: 100%;
+}
+
 @theme {
   --animate-slide-in: slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 
@@ -42,4 +64,23 @@
 /* Smooth micro-interaction transitions */
 button, select, input, textarea, a {
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (max-width: 639px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

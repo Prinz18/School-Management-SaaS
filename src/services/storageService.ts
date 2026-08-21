@@ -1,6 +1,55 @@
 // src/services/storageService.ts
-import { storage } from '../lib/firebaseConfig';
+import { auth, storage } from '../lib/firebaseConfig';
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
+
+const isBrowserStorageAvailable = () => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+
+const getStorageCacheKey = () => {
+  const uid = auth.currentUser?.uid || 'anonymous';
+  return `smart-school-saas:storage-cache:v1:${uid}`;
+};
+
+const loadStorageCache = (): Record<string, string> => {
+  if (!isBrowserStorageAvailable()) return {};
+  try {
+    const raw = window.localStorage.getItem(getStorageCacheKey());
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveStorageCache = (cache: Record<string, string>): void => {
+  if (!isBrowserStorageAvailable()) return;
+  try {
+    window.localStorage.setItem(getStorageCacheKey(), JSON.stringify(cache));
+  } catch {}
+};
+
+const cacheDataUrl = (path: string, dataUrl: string): void => {
+  const cache = loadStorageCache();
+  cache[path] = dataUrl;
+  saveStorageCache(cache);
+};
+
+const removeCachedDataUrl = (path: string): void => {
+  const cache = loadStorageCache();
+  delete cache[path];
+  saveStorageCache(cache);
+};
+
+const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => {
+    if (typeof reader.result === 'string') {
+      resolve(reader.result);
+      return;
+    }
+    reject(new Error('Could not convert file to a data URL.'));
+  };
+  reader.onerror = () => reject(new Error('Could not convert file to a data URL.'));
+  reader.readAsDataURL(blob);
+});
 
 export const storageService = {
   /**
@@ -9,9 +58,17 @@ export const storageService = {
    * @param file The file or blob to upload
    */
   uploadFile: async (path: string, file: File | Blob): Promise<string> => {
-    const storageRef = ref(storage, path);
-    await uploadBytes(storageRef, file);
-    return getDownloadURL(storageRef);
+    try {
+      const storageRef = ref(storage, path);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      return url;
+    } catch (err) {
+      console.warn("Firebase Storage upload failed, falling back to a local data URL cache:", err);
+      const dataUrl = await blobToDataUrl(file);
+      cacheDataUrl(path, dataUrl);
+      return dataUrl;
+    }
   },
 
   /**
@@ -58,6 +115,15 @@ export const storageService = {
     } catch (err) {
       console.warn("Could not delete storage file:", err);
     }
+    removeCachedDataUrl(path);
+  },
+
+  /**
+   * Reads a cached data URL from local browser storage when Firebase Storage is unavailable.
+   */
+  getCachedDataUrl: (path: string): string | null => {
+    const cache = loadStorageCache();
+    return cache[path] || null;
   },
 
   /**

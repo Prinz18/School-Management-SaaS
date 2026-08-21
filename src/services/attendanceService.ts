@@ -1,14 +1,5 @@
 // src/services/attendanceService.ts
-import { db } from '../lib/firebaseConfig';
-import { 
-  collection, 
-  doc, 
-  writeBatch, 
-  query, 
-  where, 
-  onSnapshot, 
-  serverTimestamp 
-} from 'firebase/firestore';
+import { dbAdapter } from '../lib/dbAdapter';
 
 export interface AttendanceRecord {
   id: string;
@@ -30,22 +21,18 @@ export const attendanceService = {
     teacherId: string,
     date: string
   ): Promise<void> => {
-    const batch = writeBatch(db);
-    const attendanceCollection = collection(db, 'schools', schoolId, 'attendance');
-    
-    Object.entries(attendanceMap).forEach(([studentId, status]) => {
-      const docRef = doc(attendanceCollection);
-      batch.set(docRef, {
+    const promises = Object.entries(attendanceMap).map(([studentId, status]) => {
+      return dbAdapter.pushDoc(`schools/${schoolId}/attendance`, {
         studentId,
         schoolId,
         teacherId,
         status,
-        date, 
-        createdAt: serverTimestamp(),
+        date,
+        createdAt: Date.now()
       });
     });
-    
-    await batch.commit();
+
+    await Promise.all(promises);
   },
 
   /**
@@ -56,62 +43,44 @@ export const attendanceService = {
     schoolId: string,
     onUpdate: (records: AttendanceRecord[]) => void
   ): (() => void) => {
-    const attendanceRef = collection(db, 'schools', schoolId, 'attendance');
-    const attendanceQuery = query(attendanceRef, where('studentId', '==', studentId));
-    
-    return onSnapshot(attendanceQuery, (snapshot) => {
-      const recordList: AttendanceRecord[] = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        const createdAt = data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt;
-        recordList.push({
-          id: docSnap.id,
+    return dbAdapter.subscribeToPath(`schools/${schoolId}/attendance`, (list) => {
+      const recordList: AttendanceRecord[] = list
+        .filter(data => data.studentId === studentId)
+        .map(data => ({
+          id: data.id,
           studentId: data.studentId || '',
-          schoolId: data.schoolId || '',
+          schoolId: data.schoolId || schoolId,
           teacherId: data.teacherId || '',
           status: data.status || 'present',
           date: data.date || '',
-          createdAt: createdAt || 0
-        });
-      });
+          createdAt: typeof data.createdAt === 'number' ? data.createdAt : Date.now()
+        }));
       recordList.sort((a, b) => b.date.localeCompare(a.date));
       onUpdate(recordList);
-    }, (error) => {
-      console.warn("Error subscribing to student attendance:", error);
-      onUpdate([]);
     });
   },
 
   /**
-   * Subscribes to attendance records filtered by school and optional date.
+   * Subscribes to attendance records filtered by school and date.
    */
   subscribeToSchoolAttendanceByDate: (
     schoolId: string,
     date: string,
     onUpdate: (records: AttendanceRecord[]) => void
   ): (() => void) => {
-    const attendanceRef = collection(db, 'schools', schoolId, 'attendance');
-    const attendanceQuery = query(attendanceRef, where('date', '==', date));
-    
-    return onSnapshot(attendanceQuery, (snapshot) => {
-      const recordList: AttendanceRecord[] = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        const createdAt = data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt;
-        recordList.push({
-          id: docSnap.id,
+    return dbAdapter.subscribeToPath(`schools/${schoolId}/attendance`, (list) => {
+      const recordList: AttendanceRecord[] = list
+        .filter(data => data.date === date)
+        .map(data => ({
+          id: data.id,
           studentId: data.studentId || '',
-          schoolId: data.schoolId || '',
+          schoolId: data.schoolId || schoolId,
           teacherId: data.teacherId || '',
           status: data.status || 'present',
           date: data.date || '',
-          createdAt: createdAt || 0
-        });
-      });
+          createdAt: typeof data.createdAt === 'number' ? data.createdAt : Date.now()
+        }));
       onUpdate(recordList);
-    }, (error) => {
-      console.warn("Error subscribing to school attendance by date:", error);
-      onUpdate([]);
     });
   }
 };

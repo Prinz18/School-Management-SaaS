@@ -1,7 +1,6 @@
 // src/components/grade/AIGradingAssistant.tsx
 import React, { useState, useEffect } from 'react';
-import { db } from '../../lib/firebaseConfig';
-import { collection, addDoc, onSnapshot, doc } from 'firebase/firestore';
+import { dbAdapter } from '../../lib/dbAdapter';
 import { storageService } from '../../services/storageService';
 import { userService, type UserData } from '../../services/userService';
 import { academicService, type AssignmentData } from '../../services/academicService';
@@ -101,14 +100,11 @@ export const AIGradingAssistant: React.FC<AIGradingAssistantProps> = ({ schoolId
 
       let attachmentUrl = "";
       if (imageFile) {
-        // Upload image to Storage under users/UID/grading_tasks/
         const storagePath = `schools/${schoolId}/users/${selectedStudentId}/grading_${Date.now()}_${imageFile.name}`;
         attachmentUrl = await storageService.uploadFile(storagePath, imageFile);
       }
 
-      // Add task to firestore-multimodal-genai trigger collection
-      const targetCollection = collection(db, 'schools', schoolId, 'ai_grading');
-      const docRef = await addDoc(targetCollection, {
+      const taskId = await dbAdapter.pushDoc(`schools/${schoolId}/ai_grading`, {
         className: assignments.find(a => a.classId === selectedClassId)?.className || "Classroom",
         subjectName: selectedSubjectName,
         assignmentName: selectedAssignmentName || "Term Assignment",
@@ -124,21 +120,18 @@ export const AIGradingAssistant: React.FC<AIGradingAssistantProps> = ({ schoolId
         createdAt: new Date().toISOString()
       });
 
-      setCurrentTaskId(docRef.id);
+      setCurrentTaskId(taskId);
 
-      // Listen to the document in real time to simulate AI streaming back from the Firebase Extension
-      const unsub = onSnapshot(doc(db, 'schools', schoolId, 'ai_grading', docRef.id), (snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          
-          // Extension writes output to `feedback` (as configured in firestore-multimodal-genai.env)
+      const unsub = dbAdapter.subscribeToPath(`schools/${schoolId}/ai_grading/${taskId}`, (list) => {
+        const data = list && list.length > 0 ? list[0] : null;
+        if (data) {
           if (data.feedback) {
             setAiFeedback(data.feedback);
             setAiStatus('completed');
             setSubmitting(false);
             unsub();
           } else if (data.status && data.status.state === 'ERROR') {
-            setErrorMsg(data.status.error || "The AI Extension encountered an error during inference.");
+            setErrorMsg(data.status.error || "The AI Assistant encountered an error during inference.");
             setAiStatus('failed');
             setSubmitting(false);
             unsub();
@@ -146,16 +139,11 @@ export const AIGradingAssistant: React.FC<AIGradingAssistantProps> = ({ schoolId
             setAiStatus('processing');
           }
         }
-      }, (err) => {
-        console.error("Error listening to AI task update:", err);
-        setErrorMsg("Failed to track AI processing status.");
-        setAiStatus('failed');
-        setSubmitting(false);
       });
 
     } catch (err: any) {
       console.error("AI submission failed:", err);
-      setErrorMsg(err.message || "Failed to submit task to Firebase AI trigger collection.");
+      setErrorMsg(err.message || "Failed to submit task.");
       setAiStatus('failed');
       setSubmitting(false);
     }

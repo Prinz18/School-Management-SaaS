@@ -18,6 +18,7 @@ import {
 interface TeacherGradeViewProps {
   schoolId: string;
   teacherId: string;
+  academicYear?: string;
 }
 
 const PERIODS = [
@@ -31,7 +32,7 @@ const PERIODS = [
   { id: '2nd Semester Exam', label: 'Exam 2', sem: 2 }
 ] as const;
 
-export const TeacherGradeView: React.FC<TeacherGradeViewProps> = ({ schoolId, teacherId }) => {
+export const TeacherGradeView: React.FC<TeacherGradeViewProps> = ({ schoolId, teacherId, academicYear }) => {
   const [assignments, setAssignments] = useState<AssignmentData[]>([]);
   const [allGrades, setAllGrades] = useState<GradeData[]>([]);
   const [students, setStudents] = useState<UserData[]>([]);
@@ -64,11 +65,11 @@ export const TeacherGradeView: React.FC<TeacherGradeViewProps> = ({ schoolId, te
           setSelectedClass(assignmentList[0].classId);
           setSelectedSubject(assignmentList[0].subjectName);
         }
-      });
+      }, academicYear);
 
       const unsubGrades = gradeService.subscribeToTeacherGrades(teacherId, schoolId, (gradeList) => {
         setAllGrades(gradeList);
-      });
+      }, academicYear);
 
       const unsubUsers = userService.subscribeToSchoolUsers(schoolId, (userList) => {
         setStudents(userList.filter(u => u.role === 'student' && u.status === 'active'));
@@ -215,7 +216,8 @@ export const TeacherGradeView: React.FC<TeacherGradeViewProps> = ({ schoolId, te
           selectedSubject,
           numScore,
           numMax,
-          activeCell.term
+          activeCell.term,
+          academicYear
         );
       }
       setActiveCell(null);
@@ -248,15 +250,15 @@ export const TeacherGradeView: React.FC<TeacherGradeViewProps> = ({ schoolId, te
   if (loading) return <div className="text-center py-10 font-bold text-slate-500">Loading ledger data...</div>;
 
   return (
-    <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden relative">
+    <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden relative min-w-0">
       {/* Filtering Header Panel */}
-      <div className="p-6 bg-slate-50/50 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="p-4 sm:p-6 bg-slate-50/50 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-4 min-w-0">
         <div className="flex items-center gap-2">
           <BookOpen className="w-5 h-5 text-indigo-500" />
           <h3 className="font-black text-slate-900 uppercase tracking-tight text-sm">Gradebook Ledger Matrix</h3>
         </div>
 
-        <div className="flex flex-wrap gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full md:w-auto">
           <div className="flex items-center gap-2 bg-white px-3 py-1.5 border border-slate-200 rounded-xl shadow-sm">
             <Filter className="w-3.5 h-3.5 text-slate-400" />
             <select
@@ -298,7 +300,68 @@ export const TeacherGradeView: React.FC<TeacherGradeViewProps> = ({ schoolId, te
           No students are currently enrolled in the selected classroom.
         </div>
       ) : (
-        <div className="overflow-x-auto">
+        <>
+          <div className="grid gap-4 px-4 py-4 md:hidden">
+            {studentsInClass.map(student => {
+              const s1 = getSemAvg(student.id, 1);
+              const s2 = getSemAvg(student.id, 2);
+              const finalScore = getFinalAvg(student.id);
+
+              return (
+                <div key={student.id} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-black text-slate-900 break-words">{student.name}</p>
+                      <p className="mt-0.5 text-[10px] font-mono font-bold text-slate-400">{student.studentId || 'No ID'}</p>
+                    </div>
+                    <div className="rounded-xl bg-amber-50 px-3 py-2 text-center text-xs font-black text-amber-700">
+                      {finalScore !== null ? `${finalScore}%` : '-'}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] font-black">
+                    <div className="rounded-xl bg-indigo-50 px-3 py-2 text-center text-indigo-700">
+                      Sem 1
+                      <div className="mt-1 text-sm">{s1 !== null ? `${s1}%` : '-'}</div>
+                    </div>
+                    <div className="rounded-xl bg-emerald-50 px-3 py-2 text-center text-emerald-700">
+                      Sem 2
+                      <div className="mt-1 text-sm">{s2 !== null ? `${s2}%` : '-'}</div>
+                    </div>
+                    <div className="rounded-xl bg-amber-50 px-3 py-2 text-center text-amber-800">
+                      Final
+                      <div className="mt-1 text-sm">{finalScore !== null ? `${finalScore}%` : '-'}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {PERIODS.map(p => {
+                      const entry = gradeMatrix[student.id]?.[p.id];
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          onClick={() => handleCellClick(student.id, student.name, p.id)}
+                          className={`rounded-xl border px-2 py-2 text-[10px] font-black uppercase tracking-wider transition ${
+                            entry
+                              ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
+                              : 'border-slate-200 bg-slate-50 text-slate-400'
+                          }`}
+                        >
+                          {p.label}
+                          <div className="mt-1 text-[11px] normal-case tracking-normal">
+                            {entry ? `${entry.score}/${entry.maxScore}` : 'Add'}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[900px]">
             <thead>
               <tr className="bg-slate-50/30 border-b border-slate-100 text-[10px] font-black text-slate-400 uppercase tracking-wider">
@@ -377,13 +440,14 @@ export const TeacherGradeView: React.FC<TeacherGradeViewProps> = ({ schoolId, te
               })}
             </tbody>
           </table>
-        </div>
+          </div>
+        </>
       )}
 
       {/* Grade Entry Popover Modal */}
       {activeCell && (
         <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-white rounded-3xl shadow-2xl border border-slate-100 p-6 animate-in fade-in zoom-in duration-150">
+          <div className="w-full max-w-[calc(100vw-2rem)] sm:max-w-sm bg-white rounded-3xl shadow-2xl border border-slate-100 p-5 sm:p-6 animate-in fade-in zoom-in duration-150 max-h-[calc(100dvh-2rem)] overflow-y-auto">
             <div className="flex justify-between items-center mb-5">
               <div>
                 <h4 className="font-black text-slate-900 text-sm uppercase tracking-wide">Enter Grade Coordinates</h4>

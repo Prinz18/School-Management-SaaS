@@ -112,14 +112,14 @@ const AddSchoolAdminForm: React.FC = () => {
         </div>
 
         <div>
-          <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 ml-1">Initial Node Assignment</label>
+          <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2 ml-1">Initial School Assignment</label>
           <select
             required
             className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 outline-none font-bold text-slate-700 transition"
             value={selectedSchoolId}
             onChange={(e) => setSelectedSchoolId(e.target.value)}
           >
-            <option value="" disabled>Select a Node</option>
+            <option value="" disabled>Select a School</option>
             {schools.map((school) => (
               <option key={school.id} value={school.schoolId}>
                 {school.name}

@@ -30,16 +30,36 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   React.useEffect(() => {
     console.log("AuthProvider initializing...");
+    let isMounted = true;
+
+    // Safety timeout: Ensure the screen never hangs indefinitely on "Authenticating..."
+    const safetyTimer = setTimeout(() => {
+      if (isMounted && loading) {
+        console.warn("Auth listener timed out. Proceeding to unauthenticated state.");
+        setLoading(false);
+      }
+    }, 3500);
+
     const unsubscribe = auth.onAuthStateChanged(user => {
       console.log("Auth State Changed:", user ? `Logged in as ${user.email}` : "Logged out");
-      setCurrentUser(user);
-      setLoading(false);
+      if (isMounted) {
+        clearTimeout(safetyTimer);
+        setCurrentUser(user);
+        setLoading(false);
+      }
     }, error => {
       console.error("Auth state change error:", error);
-      setLoading(false); // Ensure loading stops even on error
+      if (isMounted) {
+        clearTimeout(safetyTimer);
+        setLoading(false); // Ensure loading stops even on error
+      }
     });
 
-    return unsubscribe;
+    return () => {
+      isMounted = false;
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, []);
 
   const value = {

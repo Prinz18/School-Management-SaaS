@@ -1,20 +1,7 @@
 // src/services/authService.ts
-import { auth, db } from '../lib/firebaseConfig';
+import { auth } from '../lib/firebaseConfig';
+import { dbAdapter } from '../lib/dbAdapter';
 import { signOut as firebaseSignOut } from 'firebase/auth';
-import { 
-  doc, 
-  getDoc, 
-  setDoc, 
-  addDoc, 
-  collection, 
-  serverTimestamp, 
-  query, 
-  where, 
-  getDocs,
-  orderBy,
-  limit,
-  onSnapshot 
-} from 'firebase/firestore';
 
 export interface UserProfile {
   id: string;
@@ -43,14 +30,13 @@ export const authService = {
   },
 
   /**
-   * Retrieves the database profile details for a given UID from Firestore.
+   * Retrieves the database profile details for a given UID.
    */
   getUserProfile: async (uid: string): Promise<UserProfile | null> => {
     try {
-      const docRef = doc(db, 'users', uid);
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        return snap.data() as UserProfile;
+      const res = await dbAdapter.getDoc(`users/${uid}`);
+      if (res.exists) {
+        return res.data as UserProfile;
       }
       return null;
     } catch (err) {
@@ -60,16 +46,15 @@ export const authService = {
   },
 
   /**
-   * Logs a security event into Firestore.
+   * Logs a security event into database.
    */
   logSecurityEvent: async (event: string, email: string, attemptedKey: string): Promise<void> => {
     try {
-      const logsRef = collection(db, 'security_logs');
-      await addDoc(logsRef, {
+      await dbAdapter.pushDoc('security_logs', {
         event,
         email,
         attemptedKey,
-        timestamp: serverTimestamp(),
+        timestamp: Date.now(),
         status: 'BLOCKED'
       });
     } catch (err) {
@@ -78,14 +63,12 @@ export const authService = {
   },
 
   /**
-   * Verifies if a school exists by its schoolId/code in Firestore.
+   * Verifies if a school exists by its schoolId/code.
    */
   verifySchoolExists: async (schoolId: string): Promise<boolean> => {
     try {
-      const schoolsRef = collection(db, 'schools');
-      const q = query(schoolsRef, where('schoolId', '==', schoolId));
-      const snap = await getDocs(q);
-      return !snap.empty;
+      const schoolRes = await dbAdapter.getDoc(`schools/${schoolId}`);
+      return schoolRes.exists;
     } catch (err) {
       console.error("Error in verifySchoolExists:", err);
       return false;
@@ -93,39 +76,22 @@ export const authService = {
   },
 
   /**
-   * Creates a user profile record in Firestore.
+   * Creates a user profile record.
    */
   createUserProfile: async (uid: string, profile: Partial<UserProfile>): Promise<void> => {
-    const docRef = doc(db, 'users', uid);
-    await setDoc(docRef, {
+    await dbAdapter.setDoc(`users/${uid}`, {
       ...profile,
-      createdAt: serverTimestamp()
+      createdAt: Date.now()
     });
   },
 
   /**
-   * Subscribes to recent security logs in Firestore (capped at 20 entries).
+   * Subscribes to recent security logs (capped at 20 entries).
    */
   subscribeToSecurityLogs: (onUpdate: (logs: any[]) => void): (() => void) => {
-    const logsRef = collection(db, 'security_logs');
-    const q = query(logsRef, orderBy('timestamp', 'desc'), limit(20));
-    
-    return onSnapshot(q, (snapshot) => {
-      const logList: any[] = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        // Convert Firestore Timestamp to millis if exists
-        const timestamp = data.timestamp?.toMillis ? data.timestamp.toMillis() : data.timestamp;
-        logList.push({ 
-          id: docSnap.id, 
-          ...data,
-          timestamp 
-        });
-      });
-      onUpdate(logList);
-    }, (error) => {
-      console.error("Error in subscribeToSecurityLogs:", error);
-      onUpdate([]);
+    return dbAdapter.subscribeToPath('security_logs', (list) => {
+      list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      onUpdate(list.slice(0, 20));
     });
   }
 };

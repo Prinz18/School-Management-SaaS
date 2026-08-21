@@ -23,10 +23,14 @@ import {
   Eye,
   FilePenLine,
   X,
-  Save
+  Save,
+  Trash2,
+  MessageSquare
 } from 'lucide-react';
 import { DashboardLayout, type TabItem } from '../components/common/DashboardLayout';
+import SupportHistory from '../components/common/SupportHistory';
 import AccountSettings from '../components/user/AccountSettings';
+import StudentRegistrationManager from '../components/school/StudentRegistrationManager';
 import { academicService, type ClassData } from '../services/academicService';
 import { userService, type UserData } from '../services/userService';
 import { storageService } from '../services/storageService';
@@ -70,6 +74,7 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadingEditPhoto, setUploadingEditPhoto] = useState(false);
   const [provisioning, setProvisioning] = useState(false);
+  const [deletingEditPhoto, setDeletingEditPhoto] = useState(false);
   const [provisionStep, setProvisionStep] = useState(0);
   const [provisionedCredentials, setProvisionedCredentials] = useState<{
     uid: string;
@@ -84,6 +89,7 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
   const [searchQuery, setSearchQuery] = useState('');
   const [classFilter, setClassFilter] = useState('');
   const [viewingStudentDetail, setViewingStudentDetail] = useState<UserData | null>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const schoolId = profile.schoolId;
@@ -285,6 +291,24 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
     }
   };
 
+  const handleDeleteEditPhoto = async () => {
+    if (!editingStudent) return;
+    if (!window.confirm(`Delete the passport photo for ${editingStudent.name}?`)) return;
+
+    setDeletingEditPhoto(true);
+    setEditError(null);
+
+    try {
+      await userService.deletePassportPhoto(editingStudent.id);
+      setEditPassportPhoto(null);
+      setEditingStudent((current) => current ? { ...current, passportPhoto: null, passportPhotoPath: null } : current);
+    } catch (err: any) {
+      setEditError(err.message || 'Failed to delete passport photo.');
+    } finally {
+      setDeletingEditPhoto(false);
+    }
+  };
+
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!studentId) {
@@ -364,7 +388,9 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
 
   const tabs: TabItem[] = [
     { id: 'register', label: 'Student Enrollment', icon: <UserPlus className="w-5 h-5" /> },
+    { id: 'intake', label: 'Student Intake', icon: <Users className="w-5 h-5" /> },
     { id: 'directory', label: 'Student Directory', icon: <Users className="w-5 h-5" /> },
+    { id: 'support', label: 'Support', icon: <MessageSquare className="w-5 h-5" /> },
     { id: 'settings', label: 'Portal Settings', icon: <Settings className="w-5 h-5" /> }
   ];
 
@@ -375,10 +401,20 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
           title: 'Registrar Console',
           subtitle: 'Provision a student ledger account, document bio-data, and capture passport credentials.'
         };
+      case 'intake':
+        return {
+          title: 'Student Intake',
+          subtitle: 'Generate secure student registration links and approve submitted forms into active student accounts.'
+        };
       case 'directory':
         return {
           title: 'Ledger Registry',
           subtitle: 'Search and inspect registered student profiles and academic classifications.'
+        };
+      case 'support':
+        return {
+          title: 'Support History',
+          subtitle: 'Review your support messages and the replies that were sent back.'
         };
       case 'settings':
       default:
@@ -407,6 +443,37 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
     
     return matchesSearch && matchesClass;
   });
+
+  const studentSearchSuggestions = React.useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      return filteredStudents.slice(0, 6).map((student) => ({
+        id: student.id,
+        label: student.name,
+        hint: student.studentId || student.email || 'Student record',
+        value: student.name
+      }));
+    }
+
+    const base = students
+      .map((student) => ({
+        id: student.id,
+        label: student.name,
+        hint: student.studentId || student.email || 'Student record',
+        value: student.name,
+        score:
+          Number(student.name.toLowerCase().startsWith(query)) * 3 +
+          Number((student.studentId || '').toLowerCase().startsWith(query)) * 2 +
+          Number((student.email || '').toLowerCase().startsWith(query)) * 2 +
+          Number(student.name.toLowerCase().includes(query)) +
+          Number((student.studentId || '').toLowerCase().includes(query)) +
+          Number((student.email || '').toLowerCase().includes(query))
+      }))
+      .filter((item) => item.score > 0);
+
+    base.sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+    return base.slice(0, 6);
+  }, [students, filteredStudents, searchQuery]);
 
   return (
     <DashboardLayout
@@ -497,7 +564,7 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
                       </div>
 
                       <div className="py-6 space-y-4">
-                        <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <div>
                             <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Student ID</span>
                             <p className="font-extrabold text-sm text-slate-800 font-mono">{provisionedCredentials.studentId}</p>
@@ -508,7 +575,7 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
                           </div>
                         </div>
 
-                        <div className="grid grid-cols-2 gap-4 pt-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
                           <div>
                             <span className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">Temporary Password</span>
                             <p className="font-black text-sm text-indigo-600 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-xl inline-block font-mono tracking-wider">
@@ -692,7 +759,7 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
                             </div>
                           </div>
 
-                          <div className="grid grid-cols-2 gap-4">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                               <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Date of Birth</label>
                               <div className="relative">
@@ -805,11 +872,19 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
             </div>
           )}
 
+          {activeTab === 'intake' && (
+            <StudentRegistrationManager
+              schoolId={schoolId}
+              schoolName={profile.schoolName || null}
+              schoolMotto={profile.schoolMotto || null}
+            />
+          )}
+
           {activeTab === 'directory' && (
             <div className="space-y-6">
               {/* Directory Filter Panel */}
               <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm flex flex-col sm:flex-row justify-between items-center gap-4">
-                <div className="flex items-center gap-3 bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-2xl w-full sm:w-80 md:w-96 shadow-inner">
+                <div className="relative flex items-center gap-3 bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-2xl w-full sm:w-80 md:w-96 shadow-inner">
                   <Search className="w-4 h-4 text-slate-400 shrink-0" />
                   <input 
                     type="text" 
@@ -817,7 +892,38 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
                     className="bg-transparent border-none outline-none text-xs font-bold text-slate-700 w-full placeholder-slate-400" 
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
+                    onFocus={() => setSearchFocused(true)}
+                    onBlur={() => window.setTimeout(() => setSearchFocused(false), 120)}
                   />
+
+                  {searchFocused && searchQuery.trim().length > 0 && studentSearchSuggestions.length > 0 && (
+                    <div className="absolute left-0 right-0 top-full z-20 mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+                      <div className="border-b border-slate-100 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                        Suggestions
+                      </div>
+                      <div className="max-h-72 overflow-auto">
+                        {studentSearchSuggestions.map((item) => (
+                          <button
+                            key={item.id}
+                            type="button"
+                            onClick={() => {
+                              setSearchQuery(item.value);
+                              setSearchFocused(false);
+                            }}
+                            className="flex w-full items-start gap-3 px-4 py-3 text-left hover:bg-slate-50"
+                          >
+                            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-600">
+                              <User className="h-4 w-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-black text-slate-900">{item.label}</p>
+                              <p className="truncate text-[11px] font-medium text-slate-500">{item.hint}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-3 w-full sm:w-auto">
@@ -876,7 +982,7 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
                           <h4 className="text-lg font-black text-slate-900">{viewingStudentDetail.name}</h4>
                         </div>
                         
-                        <div className="grid grid-cols-2 gap-4">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           <div>
                             <p className="text-[9px] font-black uppercase text-slate-400 tracking-wider">Student ID</p>
                             <p className="text-xs font-bold text-slate-700 font-mono">{viewingStudentDetail.studentId || 'N/A'}</p>
@@ -1007,6 +1113,18 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
                               </div>
                             )}
                           </div>
+
+                          {editPassportPhoto && (
+                            <button
+                              type="button"
+                              onClick={handleDeleteEditPhoto}
+                              disabled={deletingEditPhoto}
+                              className="inline-flex w-full items-center justify-center gap-2 rounded-2xl border border-red-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-widest text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {deletingEditPhoto ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                              Delete Photo
+                            </button>
+                          )}
                           
                           <input 
                             type="file" 
@@ -1019,7 +1137,7 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
 
                         {/* Edit Biodata details */}
                         <div className="md:col-span-2 space-y-4">
-                          <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                               <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Student ID</label>
                               <input 
@@ -1058,7 +1176,7 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
                             />
                           </div>
 
-                          <div className="grid grid-cols-2 gap-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div>
                               <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Date of Birth</label>
                               <input 
@@ -1203,6 +1321,10 @@ export const RegistrarDashboard: React.FC<RegistrarDashboardProps> = ({ profile 
                 </div>
               )}
             </div>
+          )}
+
+          {activeTab === 'support' && (
+            <SupportHistory userId={profile.id || ''} schoolId={schoolId} userName={profile.name} />
           )}
 
           {activeTab === 'settings' && (

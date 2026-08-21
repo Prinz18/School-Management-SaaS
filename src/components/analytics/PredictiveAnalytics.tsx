@@ -11,8 +11,7 @@ import {
   Lightbulb, 
   Search
 } from 'lucide-react';
-import { collection, getDocs } from 'firebase/firestore';
-import { db } from '../../lib/firebaseConfig';
+import { dbAdapter } from '../../lib/dbAdapter';
 import { type UserData } from '../../services/userService';
 import { type GradeData } from '../../services/gradeService';
 import { type AttendanceRecord } from '../../services/attendanceService';
@@ -50,19 +49,19 @@ export const PredictiveAnalytics: React.FC<PredictiveAnalyticsProps> = ({ school
 
       setLoading(true);
       try {
-        // 1. Fetch school-wide grades & attendance for correlation
-        const gradesRef = collection(db, 'schools', schoolId, 'grades');
-        const gradesSnap = await getDocs(gradesRef);
-        const allGrades: GradeData[] = [];
-        gradesSnap.forEach(d => {
-          allGrades.push({ id: d.id, ...d.data() } as any);
+        // 1. Fetch school-wide grades & attendance from Realtime Database
+        const allGrades = await new Promise<GradeData[]>(resolve => {
+          const unsub = dbAdapter.subscribeToPath(`schools/${schoolId}/grades`, (list) => {
+            unsub();
+            resolve(list as any);
+          });
         });
 
-        const attendanceRef = collection(db, 'schools', schoolId, 'attendance');
-        const attendanceSnap = await getDocs(attendanceRef);
-        const allAttendance: AttendanceRecord[] = [];
-        attendanceSnap.forEach(d => {
-          allAttendance.push({ id: d.id, ...d.data() } as any);
+        const allAttendance = await new Promise<AttendanceRecord[]>(resolve => {
+          const unsub = dbAdapter.subscribeToPath(`schools/${schoolId}/attendance`, (list) => {
+            unsub();
+            resolve(list as any);
+          });
         });
 
         // 2. Predictor logic per student

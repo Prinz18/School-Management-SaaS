@@ -1,11 +1,11 @@
 import React from 'react';
 import { gradeService, type GradeData } from '../../services/gradeService';
 import { userService } from '../../services/userService';
+import { academicService } from '../../services/academicService';
 import { GraduationCap, Award, TrendingUp, Download, FileText } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { db } from '../../lib/firebaseConfig';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { dbAdapter } from '../../lib/dbAdapter';
 
 interface StudentReportCardProps {
   studentId: string;
@@ -13,7 +13,9 @@ interface StudentReportCardProps {
   studentName?: string;
   schoolName?: string;
   classroomName?: string;
+  academicYear?: string;
   customConfig?: any;
+  previewMode?: boolean;
 }
 
 const StudentReportCard: React.FC<StudentReportCardProps> = ({ 
@@ -22,37 +24,42 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
   studentName = 'Student',
   schoolName = 'Liberia Schools Portal',
   classroomName = 'General',
-  customConfig
+  academicYear,
+  customConfig,
+  previewMode = false
 }) => {
   const [grades, setGrades] = React.useState<GradeData[]>([]);
   const [allSchoolGrades, setAllSchoolGrades] = React.useState<GradeData[]>([]);
   const [schoolConfig, setSchoolConfig] = React.useState<any>(null);
   const [schoolDetails, setSchoolDetails] = React.useState<{ name: string; address: string; motto?: string } | null>(null);
   const [teachersMap, setTeachersMap] = React.useState<Record<string, string>>({});
-  const [loading, setLoading] = React.useState(true);
+  const [studentsMap, setStudentsMap] = React.useState<Record<string, { classId?: string | null }>>({});
+  const [classesMap, setClassesMap] = React.useState<Record<string, string>>({});
+  const [loading, setLoading] = React.useState(!previewMode);
+
+  const activeGrades = grades;
+  const activeAllSchoolGrades = allSchoolGrades;
+  const activeTeachersMap = teachersMap;
+  const resolvedClassroomName = React.useMemo(() => {
+    const classId = studentsMap[studentId]?.classId;
+    if (classId && classesMap[classId]) return classesMap[classId];
+    return classroomName;
+  }, [classesMap, classroomName, studentId, studentsMap]);
 
   React.useEffect(() => {
-    // Fetch school config - Targeted query for only THIS school
-    const schoolsRef = collection(db, 'schools');
-    const schoolQuery = query(schoolsRef, where('schoolId', '==', schoolId));
-    
-    const unsubConfig = onSnapshot(schoolQuery, (snapshot) => {
-      if (!snapshot.empty) {
-        const schoolDoc = snapshot.docs[0];
-        const schoolData = schoolDoc.data();
-        if (schoolData) {
-          setSchoolDetails({
-            name: schoolData.name || schoolName,
-            address: schoolData.address || 'Liberia',
-            motto: schoolData.motto || ''
-          });
-          if (schoolData.reportConfig) {
-            setSchoolConfig(schoolData.reportConfig);
-          }
+    // Fetch school config from Realtime Database
+    const unsubConfig = dbAdapter.subscribeToPath(`schools/${schoolId}`, (data) => {
+      if (data && data.length > 0) {
+        const schoolData = data[0];
+        setSchoolDetails({
+          name: schoolData.name || schoolName,
+          address: schoolData.address || 'Liberia',
+          motto: schoolData.motto || ''
+        });
+        if (schoolData.reportConfig) {
+          setSchoolConfig(schoolData.reportConfig);
         }
       }
-    }, (error) => {
-      console.error("Error subscribing to school details:", error);
     });
 
     // Subscribe to student's own grades
@@ -61,44 +68,54 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
         .filter((g: any) => g.schoolId === schoolId)
         .sort((a: any, b: any) => b.createdAt - a.createdAt);
       setGrades(filtered);
-    });
+    }, academicYear);
 
     // Subscribe to all school grades for ranking
     const unsubSchoolGrades = gradeService.subscribeToSchoolGrades(schoolId, (gradeList) => {
       setAllSchoolGrades(gradeList);
       setLoading(false);
+    }, academicYear);
+
+    const unsubStudents = userService.subscribeToSchoolUsers(schoolId, (userList) => {
+      const nextStudents: Record<string, { classId?: string | null }> = {};
+      const nextTeachers: Record<string, string> = {};
+      userList.forEach(u => {
+        nextStudents[u.id] = { classId: u.classId || null };
+        if (u.role === 'teacher') {
+          nextTeachers[u.id] = u.name;
+        }
+      });
+      setStudentsMap(nextStudents);
+      setTeachersMap(nextTeachers);
+    });
+
+    const unsubClasses = academicService.subscribeToSchoolClasses(schoolId, (classList) => {
+      const nextClasses: Record<string, string> = {};
+      classList.forEach(c => {
+        nextClasses[c.id] = c.name;
+      });
+      setClassesMap(nextClasses);
     });
 
     return () => {
       unsubConfig();
       unsubMyGrades();
       unsubSchoolGrades();
+      unsubStudents();
+      unsubClasses();
     };
   }, [studentId, schoolId]);
-
-  React.useEffect(() => {
-    if (schoolId) {
-      const unsubscribe = userService.subscribeToSchoolUsers(schoolId, (userList) => {
-        const tMap: Record<string, string> = {};
-        userList.forEach(u => {
-          if (u.role === 'teacher') {
-            tMap[u.id] = u.name;
-          }
-        });
-        setTeachersMap(tMap);
-      });
-      return () => unsubscribe();
-    }
-  }, [schoolId]);
 
   const calculatePercentage = (score: number, max: number) => {
     return Math.round((score / max) * 100);
   };
 
-  const getRank = () => {
-    if (allSchoolGrades.length === 0 || grades.length === 0) return "--";
+  const getRankData = () => {
+    if (activeAllSchoolGrades.length === 0 || activeGrades.length === 0) {
+      return { schoolRank: '--', classRank: '--', schoolTotal: 0, classTotal: 0 };
+    }
 
-    const studentAverages = allSchoolGrades.reduce((acc, g) => {
+    const studentAverages = activeAllSchoolGrades.reduce((acc, g) => {
       if (!acc[g.studentId]) {
         acc[g.studentId] = { totalPct: 0, count: 0 };
       }
@@ -114,15 +131,47 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
       }))
       .sort((a, b) => b.avg - a.avg);
 
-    const position = rankedStudents.findIndex(s => s.id === studentId) + 1;
-    
-    if (position === 0) return "--";
+    const schoolPosition = rankedStudents.findIndex(s => s.id === studentId) + 1;
 
-    const j = position % 10, k = position % 100;
-    if (j === 1 && k !== 11) return position + "st";
-    if (j === 2 && k !== 12) return position + "nd";
-    if (j === 3 && k !== 13) return position + "rd";
-    return position + "th";
+    const currentStudentClassId = studentsMap[studentId]?.classId || null;
+    const classStudentIds = currentStudentClassId
+      ? Object.entries(studentsMap)
+          .filter(([_, student]) => student.classId === currentStudentClassId)
+          .map(([id]) => id)
+      : activeAllSchoolGrades
+          .filter(g => g.studentId === studentId)
+          .length > 0
+            ? [studentId]
+            : [];
+
+    const classRankedStudents = classStudentIds.length > 0
+      ? rankedStudents.filter(s => classStudentIds.includes(s.id))
+      : rankedStudents;
+    const classPosition = classRankedStudents.findIndex(s => s.id === studentId) + 1;
+    const classTotal = classRankedStudents.length;
+    const schoolTotal = rankedStudents.length;
+
+    const ordinal = (position: number) => {
+      if (position <= 0) return '--';
+      const j = position % 10, k = position % 100;
+      if (j === 1 && k !== 11) return position + "st";
+      if (j === 2 && k !== 12) return position + "nd";
+      if (j === 3 && k !== 13) return position + "rd";
+      return position + "th";
+    };
+
+    const formatRank = (position: number, total: number) => {
+      if (position <= 0 || total <= 0) return '--';
+      const noun = total === 1 ? 'student' : 'students';
+      return `${ordinal(position)} out of ${total} ${noun}`;
+    };
+
+    return {
+      schoolRank: formatRank(schoolPosition, schoolTotal),
+      classRank: formatRank(classPosition, classTotal),
+      schoolTotal,
+      classTotal
+    };
   };
 
   const getGradeColor = (percentage: number) => {
@@ -167,12 +216,12 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
       scores: Record<string, number>;
     }
     const pivoted: Record<string, PivotedSubject> = {};
-    grades.forEach(g => {
+    activeGrades.forEach(g => {
       const sub = g.subject.toUpperCase();
       if (!pivoted[sub]) {
         pivoted[sub] = {
           subject: g.subject,
-          teacher: teachersMap[g.teacherId] || 'Class Teacher',
+          teacher: activeTeachersMap[g.teacherId] || 'Class Teacher',
           scores: {}
         };
       }
@@ -237,8 +286,16 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
     if (presentAverages.length === 0) return undefined;
     return Math.round(presentAverages.reduce((a, b) => a + b, 0) / presentAverages.length);
   };
+  const getImageFormat = (dataUrl: string): 'PNG' | 'JPEG' => {
+    const match = /^data:(image\/[^;]+);base64,/i.exec(dataUrl);
+    if (!match) return 'PNG';
+    const mime = match[1].toLowerCase();
+    if (mime.includes('jpeg') || mime.includes('jpg')) return 'JPEG';
+    return 'PNG';
+  };
   const handleDownloadPDF = () => {
     try {
+      const rankData = getRankData();
       const doc = new jsPDF();
       const pageWidth = doc.internal.pageSize.width;
       const pageHeight = doc.internal.pageSize.height;
@@ -351,9 +408,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
       sections.forEach((section: string) => {
         if (section === 'header') {
             if (config.templateType === 'official') {
-              if (config.showSeal && config.logoUrl) {
+              if (config.logoUrl) {
                 try {
-                  doc.addImage(config.logoUrl, 'PNG', 15, currentY + 2, 20, 20);
+                  doc.addImage(config.logoUrl, getImageFormat(config.logoUrl), 15, currentY + 2, 20, 20);
                 } catch (e) {
                   console.error("Failed to add custom logo to official template:", e);
                   const initials = (config.officialName || schoolDetails?.name || schoolName)
@@ -414,9 +471,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               doc.text('OFFICIAL STUDENT REPORT CARD', pageWidth / 2, currentY + 28, { align: 'center' });
               currentY += 36;
             } else if (config.templateType === 'simple_grid') {
-              if (config.showSeal && config.logoUrl) {
+              if (config.logoUrl) {
                 try {
-                  doc.addImage(config.logoUrl, 'PNG', 15, currentY, 20, 20);
+                  doc.addImage(config.logoUrl, getImageFormat(config.logoUrl), 15, currentY, 20, 20);
                   doc.setFont('times', 'bold');
                   doc.setFontSize(20);
                   doc.setTextColor(100, 116, 139); // Clean gray-blue
@@ -447,9 +504,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
                 currentY += 32;
               }
             } else if (config.templateType === 'academic_beige') {
-              if (config.showSeal && config.logoUrl) {
+              if (config.logoUrl) {
                 try {
-                  doc.addImage(config.logoUrl, 'PNG', 15, currentY, 22, 22);
+                  doc.addImage(config.logoUrl, getImageFormat(config.logoUrl), 15, currentY, 22, 22);
                   doc.setFont('times', 'bold');
                   doc.setFontSize(20);
                   doc.setTextColor(12, 74, 62); // Forest green
@@ -501,9 +558,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
                 currentY += 38;
               }
             } else if (config.templateType === 'ph_deped') {
-              if (config.showSeal && config.logoUrl) {
+              if (config.logoUrl) {
                 try {
-                  doc.addImage(config.logoUrl, 'PNG', 15, currentY, 20, 20);
+                  doc.addImage(config.logoUrl, getImageFormat(config.logoUrl), 15, currentY, 20, 20);
                   doc.setFont('times', 'bold');
                   doc.setFontSize(14);
                   doc.setTextColor(0, 0, 0);
@@ -552,9 +609,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
                 currentY += 32;
               }
             } else if (config.templateType === 'us_academy') {
-              if (config.showSeal && config.logoUrl) {
+              if (config.logoUrl) {
                 try {
-                  doc.addImage(config.logoUrl, 'PNG', 15, currentY, 20, 20);
+                  doc.addImage(config.logoUrl, getImageFormat(config.logoUrl), 15, currentY, 20, 20);
                   doc.setFont('helvetica', 'bold');
                   doc.setFontSize(16);
                   doc.setTextColor(30, 41, 59);
@@ -633,9 +690,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               doc.setFillColor(primaryRGB[0], primaryRGB[1], primaryRGB[2]);
               doc.rect(15, currentY - 5, pageWidth - 30, 42, 'F');
               
-              if (config.showSeal && config.logoUrl) {
+              if (config.logoUrl) {
                 try {
-                  doc.addImage(config.logoUrl, 'PNG', 20, currentY, 28, 28);
+                  doc.addImage(config.logoUrl, getImageFormat(config.logoUrl), 20, currentY, 28, 28);
                   doc.setTextColor(255, 255, 255);
                   let textY = currentY + 4;
                   if (config.showMinistryHeader) {
@@ -698,9 +755,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
                 currentY += 25;
               }
             } else {
-                if (config.showSeal && config.logoUrl) {
+                if (config.logoUrl) {
                   try {
-                    doc.addImage(config.logoUrl, 'PNG', 15, currentY, 24, 24);
+                    doc.addImage(config.logoUrl, getImageFormat(config.logoUrl), 15, currentY, 24, 24);
                     
                     doc.setTextColor(secondaryRGB[0], secondaryRGB[1], secondaryRGB[2]);
                     const totalHeaderHeight = config.showMinistryHeader ? 22 : 12;
@@ -818,9 +875,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
              if (config.showStudentID) {
                doc.text(`Student ID: ${studentId.substring(0, 10).toUpperCase()}`, pageWidth - 15, currentY, { align: 'right' });
              }
-             if (config.showStudentRank) {
-               doc.text(`Class Rank: ${getRank().toUpperCase()}`, pageWidth - 15, currentY + 6, { align: 'right' });
-             }
+              if (config.showStudentRank) {
+                doc.text(`Class Rank: ${rankData.classRank.toUpperCase()}`, pageWidth - 15, currentY + 6, { align: 'right' });
+              }
              currentY += 14;
              
              // Divider: ACADEMIC RECORDS
@@ -848,8 +905,8 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               } else {
                 doc.text(`Sex: N/A`, pageWidth - 15, currentY, { align: 'right' });
               }
-              if (config.showStudentRank) {
-                doc.text(`Class Rank: ${getRank().toUpperCase()}`, pageWidth - 15, currentY + 6, { align: 'right' });
+               if (config.showStudentRank) {
+                 doc.text(`Class Rank: ${rankData.classRank.toUpperCase()}`, pageWidth - 15, currentY + 6, { align: 'right' });
               } else {
                 doc.text(`Track: ACADEMIC`, pageWidth - 15, currentY + 6, { align: 'right' });
               }
@@ -871,9 +928,9 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
              } else {
                doc.text(`Reporting Period: Fall Semester 2025`, pageWidth - 20, currentY, { align: 'right' });
              }
-             if (config.showStudentRank) {
-               doc.text(`Class Rank: ${getRank()}`, pageWidth - 20, currentY + 6, { align: 'right' });
-             } else {
+              if (config.showStudentRank) {
+                doc.text(`Class Rank: ${rankData.classRank}`, pageWidth - 20, currentY + 6, { align: 'right' });
+              } else {
                doc.text(`Reporting Period: Fall Semester 2025`, pageWidth - 20, currentY + 6, { align: 'right' });
              }
              currentY += 16;
@@ -896,8 +953,8 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               doc.setFont('helvetica', 'bold');
               doc.text(classroomName, pageWidth / 2 + 20, currentY + 5);
               doc.setFont('helvetica', 'normal');
-              if (config.showStudentRank) {
-                doc.text(`Class Rank: ${getRank()}`, pageWidth / 2 + 20, currentY + 10);
+               if (config.showStudentRank) {
+                 doc.text(`Class Rank: ${rankData.classRank}`, pageWidth / 2 + 20, currentY + 10);
               } else {
                 doc.text(`Teacher: ${config.teacherTitle || 'Class Teacher'}`, pageWidth / 2 + 20, currentY + 10);
               }
@@ -942,9 +999,13 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
 
               if (config.showStudentRank) {
                 doc.setFont(config.templateType === 'playful' ? 'times' : 'helvetica', 'normal');
-                doc.text('ACADEMIC RANK:', 20, currentY + 31);
+                doc.text('CLASS RANK:', 20, currentY + 31);
                 doc.setFont(config.templateType === 'playful' ? 'times' : 'helvetica', 'bold');
-                doc.text(getRank().toUpperCase(), 65, currentY + 31);
+                doc.text(rankData.classRank.toUpperCase(), 65, currentY + 31);
+                doc.setFont(config.templateType === 'playful' ? 'times' : 'helvetica', 'normal');
+                doc.text('SCHOOL RANK:', pageWidth / 2 + 20, currentY + 31);
+                doc.setFont(config.templateType === 'playful' ? 'times' : 'helvetica', 'bold');
+                doc.text(rankData.schoolRank.toUpperCase(), pageWidth / 2 + 20, currentY + 36);
               }
               
               currentY += bioHeight + 15;
@@ -1368,7 +1429,7 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
     }
   };
 
-  if (loading && !customConfig) return <div className="text-center py-10 text-slate-500 font-bold">Fetching your results...</div>;
+  if (loading && !previewMode && !customConfig) return <div className="text-center py-10 text-slate-500 font-bold">Fetching your results...</div>;
 
   const config = customConfig || schoolConfig || {
     layoutOrder: ['header', 'bio', 'grades', 'custom', 'stats', 'scale', 'signatures', 'footer']
@@ -1384,13 +1445,176 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
     }
   }
 
+  const rankData = getRankData();
+
+  if (previewMode) {
+    const previewRows = getPivotedList().slice(0, 4);
+    const previewRanks = getRankData();
+    return (
+      <div className="w-full max-w-5xl mx-auto rounded-3xl border border-slate-200 bg-white shadow-xl overflow-hidden">
+        <div className="flex flex-col gap-5 border-b border-slate-100 p-5 sm:flex-row sm:items-start sm:justify-between sm:p-6">
+          <div className="flex min-w-0 items-start gap-4">
+            {config.logoUrl ? (
+              <img src={config.logoUrl} alt="School Logo" className="h-16 w-16 shrink-0 rounded-2xl border bg-white object-contain p-1.5" />
+            ) : (
+              <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border bg-slate-50 text-slate-300">
+                <FileText className="h-6 w-6" />
+              </div>
+            )}
+            <div className="min-w-0">
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                {config.showMinistryHeader ? 'Republic of Liberia • Ministry of Education' : 'Report Card Preview'}
+              </p>
+              <h2 className="mt-1 truncate text-xl font-black uppercase tracking-tight text-slate-900">
+                {config.officialName || schoolDetails?.name || schoolName}
+              </h2>
+              <p className="mt-1 text-sm font-medium text-slate-500">
+                {schoolDetails?.motto || config.customFooter || 'Leading the way in Education'}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col items-stretch gap-3 sm:items-end">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Student</p>
+                <p className="mt-1 truncate text-sm font-black text-slate-800">{studentName}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Class</p>
+                <p className="mt-1 truncate text-sm font-black text-slate-800">{resolvedClassroomName}</p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Rank</p>
+                <p className="mt-1 text-sm font-black text-indigo-600">{previewRanks.classRank}</p>
+              </div>
+            </div>
+
+            {activeGrades.length > 0 && (
+              <button
+                onClick={handleDownloadPDF}
+                className={`inline-flex items-center justify-center gap-2 rounded-xl px-4 py-3 text-xs font-black uppercase tracking-widest transition shadow-lg ${
+                  config.templateType === 'vibrant' || config.templateType === 'academic_beige' || config.templateType === 'us_academy'
+                    ? 'bg-white text-indigo-950 shadow-indigo-500/10 hover:bg-slate-100'
+                    : 'bg-slate-900 text-white shadow-slate-200 hover:bg-slate-800'
+                }`}
+                type="button"
+              >
+                <Download className="h-4 w-4" />
+                Download Gradesheet
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 p-5 sm:grid-cols-4 sm:p-6">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Subjects</p>
+            <p className="mt-2 text-3xl font-black text-slate-900">{new Set(activeGrades.map(g => g.subject)).size}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Average</p>
+            <p className="mt-2 text-3xl font-black text-slate-900">
+              {activeGrades.length > 0 ? Math.round(activeGrades.reduce((acc, g) => acc + calculatePercentage(g.score, g.maxScore), 0) / activeGrades.length) : 0}%
+            </p>
+          </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Class Rank</p>
+              <p className="mt-2 text-3xl font-black text-slate-900">{previewRanks.classRank}</p>
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">School Rank</p>
+              <p className="mt-2 text-3xl font-black text-slate-900">{previewRanks.schoolRank}</p>
+            </div>
+        </div>
+
+        <div className="border-t border-slate-100 p-5 sm:p-6">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-sm font-black uppercase tracking-widest text-slate-500">Recent Marks</h3>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Preview only</span>
+          </div>
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {previewRows.map((p) => {
+              const s1 = getSemAvg(p.scores, 1);
+              const s2 = getSemAvg(p.scores, 2);
+              const year = getYearAvg(p.scores);
+              return (
+                <div key={p.subject} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Subject</p>
+                      <p className="truncate text-sm font-black uppercase text-slate-800">{p.subject}</p>
+                    </div>
+                    <span className={`rounded-lg px-2.5 py-1 text-xs font-black ${year !== undefined ? getGradeColor(year) : 'text-slate-400 bg-slate-50'}`}>
+                      {year !== undefined ? getLetterGrade(year) : '-'}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] font-bold">
+                    <div className="rounded-xl bg-slate-50 px-3 py-2">Sem 1: {s1 !== undefined ? `${s1}%` : '-'}</div>
+                    <div className="rounded-xl bg-slate-50 px-3 py-2">Sem 2: {s2 !== undefined ? `${s2}%` : '-'}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {config.showSignatures && (
+          <div className="border-t border-slate-100 p-5 sm:p-6">
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+              <div className="flex min-h-[120px] flex-col items-center justify-end rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center">
+                {config.registrarSignatureUrl ? (
+                  <img
+                    src={config.registrarSignatureUrl}
+                    alt="Registrar Signature"
+                    className="mb-2 h-14 max-w-[160px] object-contain"
+                  />
+                ) : (
+                  <div className="mb-2 h-14" aria-hidden="true" />
+                )}
+                <div className="border-t border-slate-200 pt-3">
+                  <p className="text-xs font-black uppercase tracking-widest text-slate-800">
+                    {config.teacherTitle || 'Class Teacher / Registrar'}
+                  </p>
+                  <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    Academic Division
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex min-h-[120px] flex-col items-center justify-end rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center">
+                {config.principalSignatureUrl ? (
+                  <img
+                    src={config.principalSignatureUrl}
+                    alt="Principal Signature"
+                    className="mb-2 h-14 max-w-[160px] object-contain"
+                  />
+                ) : (
+                  <div className="mb-2 h-14" aria-hidden="true" />
+                )}
+                <div className="border-t border-slate-200 pt-3">
+                  <p className="text-xs font-black uppercase tracking-widest text-slate-800">
+                    {config.principalTitle || 'Principal / Administrator'}
+                  </p>
+                  <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    Office of the Principal
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       {sections.map((section: string) => {
         const isSerif = config.templateType === 'official' || config.templateType === 'ph_deped' || config.templateType === 'playful';
 
         if (section === 'header') {
-          const hasLogo = config.showSeal && config.logoUrl;
+          const hasLogo = !!config.logoUrl;
           return (
             <div key="header" className={`py-6 border-b border-slate-100 animate-fade-in flex flex-col md:flex-row items-center md:items-start gap-6 ${hasLogo ? 'text-center md:text-left' : 'text-center justify-center'}`}>
               {hasLogo ? (
@@ -1443,8 +1667,10 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
             )}
             {config.showStudentRank && (
               <div>
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Academic Rank</span>
-                <span className="text-sm font-black text-indigo-650 uppercase">{getRank()}</span>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Class Rank</span>
+                <span className="text-sm font-black text-indigo-650 uppercase">{rankData.classRank}</span>
+                <span className="mt-2 block text-[10px] font-black text-slate-400 uppercase tracking-widest">School Rank</span>
+                <span className="text-sm font-black text-indigo-650 uppercase">{rankData.schoolRank}</span>
               </div>
             )}
           </div>
@@ -1484,9 +1710,7 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               {config.registrarSignatureUrl ? (
                 <img src={config.registrarSignatureUrl} alt="Registrar Signature" className="h-12 object-contain mb-2 max-w-[150px]" />
               ) : (
-                <div className="h-12 w-20 flex items-center justify-center text-slate-350 italic text-[11px] mb-2 font-serif tracking-widest font-black uppercase">
-                  Script
-                </div>
+                <div className="h-12 mb-2" aria-hidden="true" />
               )}
               <span className="text-xs font-black text-slate-750 uppercase tracking-wider block">
                 {config.teacherTitle || 'Class Teacher / Registrar'}
@@ -1499,9 +1723,7 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               {config.principalSignatureUrl ? (
                 <img src={config.principalSignatureUrl} alt="Principal Signature" className="h-12 object-contain mb-2 max-w-[150px]" />
               ) : (
-                <div className="h-12 w-20 flex items-center justify-center text-slate-350 italic text-[11px] mb-2 font-serif tracking-widest font-black uppercase">
-                  Script
-                </div>
+                <div className="h-12 mb-2" aria-hidden="true" />
               )}
               <span className="text-xs font-black text-slate-750 uppercase tracking-wider block">
                 {config.principalTitle || 'Principal / Administrator'}
@@ -1533,7 +1755,7 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               <div className="bg-blue-100 p-3 rounded-xl"><GraduationCap className="text-blue-600" /></div>
               <div>
                 <p className="text-xs font-bold text-slate-400 uppercase">Subjects</p>
-                <p className="text-2xl font-black">{new Set(grades.map(g => g.subject)).size}</p>
+                <p className="text-2xl font-black">{new Set(activeGrades.map(g => g.subject)).size}</p>
               </div>
             </div>
             <div className={`p-6 flex items-center gap-4 transition-all duration-300 ${
@@ -1549,8 +1771,8 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               <div>
                 <p className="text-xs font-bold text-slate-400 uppercase">Average</p>
                 <p className="text-2xl font-black">
-                  {grades.length > 0 
-                    ? Math.round(grades.reduce((acc, g) => acc + calculatePercentage(g.score, g.maxScore), 0) / grades.length) 
+                  {activeGrades.length > 0 
+                    ? Math.round(activeGrades.reduce((acc, g) => acc + calculatePercentage(g.score, g.maxScore), 0) / activeGrades.length) 
                     : 0}%
                 </p>
               </div>
@@ -1567,7 +1789,22 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
               <div className="bg-emerald-100 p-3 rounded-xl"><TrendingUp className="text-emerald-600" /></div>
               <div>
                 <p className="text-xs font-bold text-slate-400 uppercase">Rank</p>
-                <p className="text-2xl font-black">{getRank()}</p>
+                <p className="text-2xl font-black">{rankData.classRank}</p>
+              </div>
+            </div>
+            <div className={`p-6 flex items-center gap-4 transition-all duration-300 ${
+              config.templateType === 'minimal' ? 'bg-white rounded-none border border-slate-200 shadow-none' :
+              config.templateType === 'playful' ? 'bg-amber-50/5 border-double border-4 border-slate-200 rounded-xl shadow-sm' :
+              config.templateType === 'vibrant' ? 'bg-white border border-indigo-50 shadow-lg rounded-2xl' : 'bg-white p-6 rounded-2xl shadow-sm border border-slate-100'
+            }`}
+            style={{
+              backgroundColor: config.templateType === 'playful' ? '#fffef9' : '#ffffff'
+            }}
+            >
+              <div className="bg-slate-100 p-3 rounded-xl"><Award className="text-slate-600" /></div>
+              <div>
+                <p className="text-xs font-bold text-slate-400 uppercase">School Rank</p>
+                <p className="text-2xl font-black">{rankData.schoolRank}</p>
               </div>
             </div>
           </div>
@@ -1614,7 +1851,7 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
                 </div>
               </div>
 
-              {grades.length > 0 && (
+              {activeGrades.length > 0 && (
                 <button
                   onClick={handleDownloadPDF}
                   className={`flex items-center justify-center gap-2 px-5 py-3 text-xs font-black uppercase tracking-widest transition shadow-lg ${
@@ -1625,12 +1862,12 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
                   }}
                 >
                   <Download className="w-4 h-4" />
-                  Download PDF
+                  Download Gradesheet
                 </button>
               )}
             </div>
 
-            {grades.length === 0 ? (
+            {activeGrades.length === 0 ? (
               <div className="py-20 text-center text-slate-400 font-bold">
                 No grades have been uploaded for you yet.
               </div>
@@ -1732,8 +1969,87 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
                 }
 
                 return (
-                  <div className="overflow-x-auto w-full p-2">
-                    <table className={`w-full text-left border-collapse min-w-[900px] text-xs font-bold text-slate-700 ${isSerif ? 'font-serif' : 'font-sans'}`}>
+                  <div className="w-full">
+                    <div className="space-y-3 p-3 md:hidden">
+                      {pivotedList.map((p, idx) => {
+                        const s1 = getSemAvg(p.scores, 1);
+                        const s2 = getSemAvg(p.scores, 2);
+                        const yAvg = getYearAvg(p.scores);
+                        const cardBg = idx % 2 === 1 ? 'bg-slate-50/80' : 'bg-white';
+
+                        const scoreTiles = [
+                          ['1st', p.scores['p1']],
+                          ['2nd', p.scores['p2']],
+                          ['3rd', p.scores['p3']],
+                          ['Sem 1 Ex', p.scores['e1']],
+                          ['Sem 1 Av', s1],
+                          ['4th', p.scores['p4']],
+                          ['5th', p.scores['p5']],
+                          ['6th', p.scores['p6']],
+                          ['Sem 2 Ex', p.scores['e2']],
+                          ['Sem 2 Av', s2],
+                          ['Yr Av', yAvg]
+                        ] as const;
+
+                        return (
+                          <div key={idx} className={`${cardBg} rounded-2xl border ${tdBorderClass} p-4 shadow-sm`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Subject</p>
+                                <h4 className="mt-1 truncate text-sm font-black uppercase text-slate-800">{p.subject}</h4>
+                                <p className="mt-1 text-[11px] font-medium text-slate-500">{p.teacher}</p>
+                              </div>
+                              <span className={`inline-flex shrink-0 items-center justify-center rounded-lg px-2.5 py-1 text-xs font-black ${yAvg !== undefined ? getGradeColor(yAvg) : 'text-slate-400 bg-slate-50'}`}>
+                                {yAvg !== undefined ? getLetterGrade(yAvg) : '-'}
+                              </span>
+                            </div>
+
+                            <div className="mt-4 grid grid-cols-2 gap-2">
+                              {scoreTiles.map(([label, value]) => (
+                                <div key={label} className={`rounded-xl bg-white px-3 py-2 ${tdBorderClass}`}>
+                                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">{label}</p>
+                                  <p className="mt-1 text-sm font-black text-slate-800">{value !== undefined ? `${value}%` : '-'}</p>
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold">
+                              <span className={`rounded-full px-2.5 py-1 ${highlightCellClass} ${s1 !== undefined ? '' : 'text-slate-400 bg-slate-50'}`}>
+                                Sem 1: {s1 !== undefined ? `${s1}%` : '-'}
+                              </span>
+                              <span className={`rounded-full px-2.5 py-1 ${highlightCellClass} ${s2 !== undefined ? '' : 'text-slate-400 bg-slate-50'}`}>
+                                Sem 2: {s2 !== undefined ? `${s2}%` : '-'}
+                              </span>
+                              <span className={`rounded-full px-2.5 py-1 ${highlightCellClass} ${yAvg !== undefined ? '' : 'text-slate-400 bg-slate-50'}`}>
+                                Year: {yAvg !== undefined ? `${yAvg}%` : '-'}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 shadow-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">Cumulative Average</p>
+                            <p className="mt-1 text-sm font-black text-slate-800">Class-wide performance snapshot</p>
+                          </div>
+                          <span className={`inline-flex items-center justify-center rounded-lg px-2.5 py-1 text-xs font-black ${overallYAvg !== undefined ? getGradeColor(overallYAvg) : 'text-slate-400 bg-white'}`}>
+                            {overallYAvg !== undefined ? getLetterGrade(overallYAvg) : '-'}
+                          </span>
+                        </div>
+
+                        <div className="mt-4 grid grid-cols-2 gap-2 text-[11px] font-bold">
+                          <div className="rounded-xl bg-white px-3 py-2 border border-slate-200">Sem 1 Av: {s1Avg !== undefined ? `${s1Avg}%` : '-'}</div>
+                          <div className="rounded-xl bg-white px-3 py-2 border border-slate-200">Sem 2 Av: {s2Avg !== undefined ? `${s2Avg}%` : '-'}</div>
+                          <div className="rounded-xl bg-white px-3 py-2 border border-slate-200">Yr Av: {overallYAvg !== undefined ? `${overallYAvg}%` : '-'}</div>
+                          <div className="rounded-xl bg-white px-3 py-2 border border-slate-200">Grade: {overallYAvg !== undefined ? getLetterGrade(overallYAvg) : '-'}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="hidden md:block overflow-x-auto w-full p-2">
+                      <table className={`w-full text-left border-collapse min-w-[900px] text-xs font-bold text-slate-700 ${isSerif ? 'font-serif' : 'font-sans'}`}>
                       <thead>
                         <tr className="border-b">
                           <th className={`${thClass} ${tdBorderClass} text-left min-w-[12rem] p-3`} style={thStyle}>Subject</th>
@@ -1803,6 +2119,7 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
                         </tr>
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 );
               })()

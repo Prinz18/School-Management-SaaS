@@ -1,12 +1,19 @@
 {
   "projects": {
-    "default": "prinz-08ee97cc"
+    "default": "liberia-smart-schools-portal"
   },
   "targets": {
     "prinz-08ee97cc": {
       "hosting": {
         "main": [
           "liberias-schools-portal"
+        ]
+      }
+    },
+    "liberia-smart-schools-portal": {
+      "hosting": {
+        "main": [
+          "liberia-smart-schools-portal"
         ]
       }
     }

@@ -1,17 +1,4 @@
-import { db } from '../lib/firebaseConfig';
-import { 
-  collection, 
-  doc, 
-  addDoc, 
-  setDoc,
-  updateDoc, 
-  deleteDoc, 
-  getDoc, 
-  getDocs, 
-  query, 
-  where,
-  serverTimestamp
-} from 'firebase/firestore';
+import { dbAdapter } from '../lib/dbAdapter';
 import { userService } from './userService';
 import { academicService } from './academicService';
 import { gradeService } from './gradeService';
@@ -19,6 +6,7 @@ import { attendanceService } from './attendanceService';
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || "";
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
+const GROQ_VISION_MODEL = "qwen/qwen3.6-27b";
 
 export interface MessagePart {
   text?: string;
@@ -38,22 +26,119 @@ export interface ChatMessage {
 }
 
 export interface UserContext {
-  uid: string;
-  role: string;
-  schoolId: string | null;
+  uid?: string;
+  userId?: string;
+  role?: string;
+  userRole?: string;
+  schoolId?: string | null;
+}
+
+export interface BrandAssetCropBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BrandAssetExtractionResult {
+  found: boolean;
+  confidence: number;
+  crop?: BrandAssetCropBox;
+  notes?: string;
+}
+
+function getNormalizedContext(userContext: UserContext) {
+  return {
+    uid: userContext.uid || userContext.userId || '',
+    role: userContext.role || userContext.userRole || 'user',
+    schoolId: userContext.schoolId || null
+  };
+}
+
+function stripCodeFences(text: string) {
+  return text
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+}
+
+export async function extractBrandAssetWithGroq(
+  imageDataUrl: string,
+  assetLabel: 'logo' | 'registrar signature' | 'principal signature'
+): Promise<BrandAssetExtractionResult> {
+  if (!GROQ_API_KEY) {
+    throw new Error("Groq is not configured.");
+  }
+
+  const prompt = [
+    `Inspect the image and find the ${assetLabel}.`,
+    "Return only JSON with this shape:",
+    '{"found":boolean,"confidence":number,"crop":{"x":number,"y":number,"width":number,"height":number},"notes":string}',
+    "All crop values must be normalized between 0 and 1.",
+    "Use the tightest crop that keeps the full asset visible with a small margin.",
+    "If the asset is not present or the image is already just the asset, set found to true and crop to cover the visible asset or the full image.",
+    "If you cannot confidently identify the asset, set found to false and explain briefly in notes."
+  ].join(" ");
+
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${GROQ_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: GROQ_VISION_MODEL,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            {
+              type: "image_url",
+              image_url: {
+                url: imageDataUrl
+              }
+            }
+          ]
+        }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Groq vision request failed with status ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content;
+  if (!text) {
+    throw new Error("Groq vision did not return a usable response.");
+  }
+
+  const parsed = JSON.parse(stripCodeFences(text)) as BrandAssetExtractionResult;
+  return {
+    found: !!parsed.found,
+    confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0,
+    crop: parsed.crop,
+    notes: parsed.notes
+  };
 }
 
 // ============================================================================
-// FIRESTORE TOOL EXECUTIONS (WITH NESTED SUBCOLLECTION SEPARATION)
+// DATABASE TOOL EXECUTIONS (REALTIME DB / SPARK FREE TIER ADAPTER)
 // ============================================================================
 
 async function handleQueryCollection(
-  userContext: UserContext,
+  userContextInput: UserContext,
   collectionName: string,
   field?: string,
   value?: any
 ) {
-  // 1. Global collection operations (e.g. schools or logs)
+  const userContext = getNormalizedContext(userContextInput);
+
   if (collectionName === 'schools') {
     if (userContext.role !== 'superadmin') {
       if (!userContext.schoolId) {
@@ -62,30 +147,24 @@ async function handleQueryCollection(
       if (field === 'schoolId' && value !== userContext.schoolId) {
         throw new Error("Access denied: You are not authorized to query other school contexts.");
       }
-      const schoolDocRef = doc(db, 'schools', userContext.schoolId);
-      const schoolSnap = await getDoc(schoolDocRef);
-      if (!schoolSnap.exists()) {
-        return [];
-      }
-      return [{ id: schoolSnap.id, ...schoolSnap.data() }];
+      const res = await dbAdapter.getDoc(`schools/${userContext.schoolId}`);
+      if (!res.exists) return [];
+      return [{ id: userContext.schoolId, ...res.data }];
     }
 
-    const collRef = collection(db, 'schools');
-    let q;
-    if (field && value !== undefined) {
-      q = query(collRef, where(field, '==', value));
-    } else {
-      q = query(collRef);
-    }
-    const snap = await getDocs(q);
-    const results: any[] = [];
-    snap.forEach(d => {
-      results.push({ id: d.id, ...d.data() });
+    return await new Promise<any[]>(resolve => {
+      const unsub = dbAdapter.subscribeToPath('schools', (list) => {
+        unsub();
+        let filtered = list;
+        if (field && value !== undefined) {
+          const key = field as string;
+          filtered = list.filter(item => item[key] === value);
+        }
+        resolve(filtered);
+      });
     });
-    return results;
   }
 
-  // 2. Resolve school-specific boundary scope
   let targetSchoolId = userContext.role === 'superadmin' ? null : userContext.schoolId;
   
   if (userContext.role === 'superadmin' && field === 'schoolId' && value) {
@@ -100,12 +179,7 @@ async function handleQueryCollection(
     }
   }
 
-  // 3. Nested Subcollection queries
   if (targetSchoolId) {
-    const collRef = collection(db, 'schools', targetSchoolId, collectionName);
-    let q;
-
-    // Enforce Student reading boundaries
     if (userContext.role === 'student') {
       if (collectionName === 'grades' || collectionName === 'attendance') {
         field = 'studentId';
@@ -118,75 +192,68 @@ async function handleQueryCollection(
       }
     }
 
-    if (field && value !== undefined) {
-      q = query(collRef, where(field, '==', value));
-    } else {
-      q = query(collRef);
-    }
-
-    const snap = await getDocs(q);
-    const results: any[] = [];
-    snap.forEach(d => {
-      results.push({ id: d.id, ...d.data() });
+    return await new Promise<any[]>(resolve => {
+      const unsub = dbAdapter.subscribeToPath(`schools/${targetSchoolId}/${collectionName}`, (list) => {
+        unsub();
+        let filtered = list;
+        if (field && value !== undefined) {
+          const key = field as string;
+          filtered = list.filter(item => item[key] === value);
+        }
+        resolve(filtered);
+      });
     });
-    return results;
   }
 
-  // 4. Global pointer operations (Only for SuperAdmins)
   if (userContext.role !== 'superadmin') {
     throw new Error("Access denied: Scoped queries must run inside your school node.");
   }
 
-  const collRef = collection(db, collectionName);
-  let q;
-  if (field && value !== undefined) {
-    q = query(collRef, where(field, '==', value));
-  } else {
-    q = query(collRef);
-  }
-
-  const snap = await getDocs(q);
-  const results: any[] = [];
-  snap.forEach(d => {
-    results.push({ id: d.id, ...d.data() });
+  return await new Promise<any[]>(resolve => {
+    const unsub = dbAdapter.subscribeToPath(collectionName, (list) => {
+      unsub();
+      let filtered = list;
+      if (field && value !== undefined) {
+        filtered = list.filter(item => item[field] === value);
+      }
+      resolve(filtered);
+    });
   });
-  return results;
 }
 
 async function handleGetDocument(
-  userContext: UserContext,
+  userContextInput: UserContext,
   collectionName: string,
   documentId: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
+
   if (collectionName === 'schools') {
     if (userContext.role !== 'superadmin' && documentId !== userContext.schoolId) {
       throw new Error("Access denied: You can only view your own school's information.");
     }
-    const docRef = doc(db, 'schools', documentId);
-    const snap = await getDoc(docRef);
-    if (!snap.exists()) {
+    const res = await dbAdapter.getDoc(`schools/${documentId}`);
+    if (!res.exists) {
       throw new Error("School document not found.");
     }
-    return { id: snap.id, ...snap.data() };
+    return { id: documentId, ...res.data };
   }
 
   let targetSchoolId = userContext.role === 'superadmin' ? null : userContext.schoolId;
   
   if (!targetSchoolId) {
-    // Attempt global pointers lookup (SuperAdmin only)
     if (userContext.role !== 'superadmin') {
       throw new Error("Access denied: No school context associated with your account.");
     }
-    const globalRef = doc(db, collectionName, documentId);
-    const globalSnap = await getDoc(globalRef);
-    if (!globalSnap.exists()) {
+    const globalRes = await dbAdapter.getDoc(`${collectionName}/${documentId}`);
+    if (!globalRes.exists) {
       throw new Error("Document not found globally.");
     }
-    const globalData = globalSnap.data();
+    const globalData = globalRes.data;
     if (globalData.schoolId) {
       targetSchoolId = globalData.schoolId;
     } else {
-      return { id: globalSnap.id, ...globalData };
+      return { id: documentId, ...globalData };
     }
   }
 
@@ -198,14 +265,12 @@ async function handleGetDocument(
     throw new Error("Access denied: You are not authorized to view documents belonging to another school.");
   }
 
-  const docRef = doc(db, 'schools', targetSchoolId, collectionName, documentId);
-  const snap = await getDoc(docRef);
-  if (!snap.exists()) {
+  const res = await dbAdapter.getDoc(`schools/${targetSchoolId}/${collectionName}/${documentId}`);
+  if (!res.exists) {
     throw new Error("Document not found inside school node.");
   }
-  const data = snap.data();
+  const data = res.data;
 
-  // Enforce student read bounds
   if (userContext.role === 'student') {
     if (collectionName === 'users' && documentId !== userContext.uid) {
       throw new Error("Access denied: You can only view your own profile.");
@@ -218,34 +283,33 @@ async function handleGetDocument(
     }
   }
 
-  return { id: snap.id, ...data };
+  return { id: documentId, ...data };
 }
 
 async function handleAddDocument(
-  userContext: UserContext,
+  userContextInput: UserContext,
   collectionName: string,
   dataJson: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
   const data = JSON.parse(dataJson);
 
   if (userContext.role === 'student') {
     throw new Error("Access denied: Students cannot write data.");
   }
 
-  // Handle registering schools to dedicated nodes directly (SuperAdmin only)
   if (collectionName === 'schools') {
     if (userContext.role !== 'superadmin') {
       throw new Error("Access denied: Only system super-administrators can register school nodes.");
     }
     const slug = data.schoolId || data.id || data.name.toLowerCase().trim().replace(/\s+/g, '-');
-    const docRef = doc(db, 'schools', slug);
     const payload = {
       id: slug,
       schoolId: slug,
-      createdAt: serverTimestamp(),
+      createdAt: Date.now(),
       ...data
     };
-    await setDoc(docRef, payload);
+    await dbAdapter.setDoc(`schools/${slug}`, payload);
     return { id: slug, message: "School node created successfully.", data: payload };
   }
 
@@ -261,7 +325,7 @@ async function handleAddDocument(
   }
 
   data.schoolId = targetSchoolId;
-  data.createdAt = new Date().toISOString();
+  data.createdAt = Date.now();
 
   if (userContext.role === 'teacher') {
     const allowed = ['assignments', 'grades', 'attendance', 'classes'];
@@ -271,32 +335,30 @@ async function handleAddDocument(
     data.teacherId = userContext.uid;
   }
 
-  const collRef = collection(db, 'schools', targetSchoolId, collectionName);
-  const docRef = await addDoc(collRef, data);
+  const docId = await dbAdapter.pushDoc(`schools/${targetSchoolId}/${collectionName}`, data);
 
-  // If registering a user account, mirror a pointer doc to global users collection!
   if (collectionName === 'users') {
-    const globalRef = doc(db, 'users', docRef.id);
-    await setDoc(globalRef, {
-      id: docRef.id,
+    await dbAdapter.setDoc(`users/${docId}`, {
+      id: docId,
       name: data.name,
       email: data.email,
       role: data.role,
       schoolId: targetSchoolId,
       status: data.status || 'active',
-      createdAt: serverTimestamp()
+      createdAt: Date.now()
     });
   }
 
-  return { id: docRef.id, message: "Document successfully created.", data };
+  return { id: docId, message: "Document successfully created.", data };
 }
 
 async function handleUpdateDocument(
-  userContext: UserContext,
+  userContextInput: UserContext,
   collectionName: string,
   documentId: string,
   dataJson: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
   const data = JSON.parse(dataJson);
 
   if (userContext.role === 'student') {
@@ -307,17 +369,15 @@ async function handleUpdateDocument(
     if (userContext.role !== 'superadmin' && documentId !== userContext.schoolId) {
       throw new Error("Access denied: You are not authorized to update other school configurations.");
     }
-    const docRef = doc(db, 'schools', documentId);
-    await updateDoc(docRef, data);
+    await dbAdapter.updateDoc(`schools/${documentId}`, data);
     return { id: documentId, message: "School configuration updated." };
   }
 
   let targetSchoolId = userContext.role === 'superadmin' ? data.schoolId : userContext.schoolId;
   if (!targetSchoolId) {
-    const pointerRef = doc(db, 'users', documentId);
-    const pointerSnap = await getDoc(pointerRef);
-    if (pointerSnap.exists()) {
-      targetSchoolId = pointerSnap.data().schoolId;
+    const pointerRes = await dbAdapter.getDoc(`users/${documentId}`);
+    if (pointerRes.exists) {
+      targetSchoolId = pointerRes.data.schoolId;
     }
   }
 
@@ -333,24 +393,21 @@ async function handleUpdateDocument(
     throw new Error("Access denied: You cannot reassign documents to another school context.");
   }
 
-  const docRef = doc(db, 'schools', targetSchoolId, collectionName, documentId);
   delete data.id;
   delete data.schoolId;
   delete data.createdAt;
 
-  data.updatedAt = new Date().toISOString();
-  await updateDoc(docRef, data);
+  data.updatedAt = Date.now();
+  await dbAdapter.updateDoc(`schools/${targetSchoolId}/${collectionName}/${documentId}`, data);
 
-  // Sync users global mirror
   if (collectionName === 'users') {
-    const globalRef = doc(db, 'users', documentId);
     const globalUpdates: any = {};
     if (data.name) globalUpdates.name = data.name;
     if (data.email) globalUpdates.email = data.email;
     if (data.role) globalUpdates.role = data.role;
     if (data.status) globalUpdates.status = data.status;
     if (Object.keys(globalUpdates).length > 0) {
-      await updateDoc(globalRef, globalUpdates);
+      await dbAdapter.updateDoc(`users/${documentId}`, globalUpdates);
     }
   }
 
@@ -358,10 +415,12 @@ async function handleUpdateDocument(
 }
 
 async function handleDeleteDocument(
-  userContext: UserContext,
+  userContextInput: UserContext,
   collectionName: string,
   documentId: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
+
   if (userContext.role === 'student') {
     throw new Error("Access denied: Students cannot delete data.");
   }
@@ -370,17 +429,15 @@ async function handleDeleteDocument(
     if (userContext.role !== 'superadmin') {
       throw new Error("Access denied: Only system super-administrators can delete school nodes.");
     }
-    const docRef = doc(db, 'schools', documentId);
-    await deleteDoc(docRef);
+    await dbAdapter.deleteDoc(`schools/${documentId}`);
     return { id: documentId, message: "School node completely removed." };
   }
 
   let targetSchoolId = userContext.role === 'superadmin' ? null : userContext.schoolId;
   if (!targetSchoolId) {
-    const pointerRef = doc(db, 'users', documentId);
-    const pointerSnap = await getDoc(pointerRef);
-    if (pointerSnap.exists()) {
-      targetSchoolId = pointerSnap.data().schoolId;
+    const pointerRes = await dbAdapter.getDoc(`users/${documentId}`);
+    if (pointerRes.exists) {
+      targetSchoolId = pointerRes.data.schoolId;
     }
   }
 
@@ -392,13 +449,10 @@ async function handleDeleteDocument(
     throw new Error("Access denied: You are not authorized to delete documents belonging to another school.");
   }
 
-  const docRef = doc(db, 'schools', targetSchoolId, collectionName, documentId);
-  await deleteDoc(docRef);
+  await dbAdapter.deleteDoc(`schools/${targetSchoolId}/${collectionName}/${documentId}`);
 
-  // De-provision users global pointer
   if (collectionName === 'users') {
-    const globalRef = doc(db, 'users', documentId);
-    await deleteDoc(globalRef);
+    await dbAdapter.deleteDoc(`users/${documentId}`);
   }
 
   return { id: documentId, message: "Document successfully deleted." };
@@ -409,7 +463,7 @@ async function handleDeleteDocument(
 // ============================================================================
 
 async function handleProvisionUser(
-  userContext: UserContext,
+  userContextInput: UserContext,
   name: string,
   email: string | undefined,
   role: string,
@@ -417,6 +471,7 @@ async function handleProvisionUser(
   studentIdInput?: string,
   customPassword?: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
   const allowedRoles = ['superadmin', 'schooladmin', 'registrar'];
   if (!allowedRoles.includes(userContext.role)) {
     throw new Error(`Access denied: Users with role '${userContext.role}' are not authorized to enroll or provision users.`);
@@ -454,9 +509,10 @@ async function handleProvisionUser(
 }
 
 async function handleRemoveStudent(
-  userContext: UserContext,
+  userContextInput: UserContext,
   studentIdOrUid: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
   const allowedRoles = ['superadmin', 'schooladmin', 'registrar'];
   if (!allowedRoles.includes(userContext.role)) {
     throw new Error(`Access denied: Users with role '${userContext.role}' are not authorized to remove students.`);
@@ -470,48 +526,23 @@ async function handleRemoveStudent(
   let studentDoc: any = null;
   let uid = studentIdOrUid;
 
-  // 1. Try fetching directly as UID
   if (userContext.role === 'superadmin') {
-    const globalRef = doc(db, 'users', studentIdOrUid);
-    const snap = await getDoc(globalRef);
-    if (snap.exists()) {
-      studentDoc = snap.data();
+    const globalRes = await dbAdapter.getDoc(`users/${studentIdOrUid}`);
+    if (globalRes.exists) {
+      studentDoc = globalRes.data;
     }
   } else if (targetSchoolId) {
-    const schoolUserRef = doc(db, 'schools', targetSchoolId, 'users', studentIdOrUid);
-    const snap = await getDoc(schoolUserRef);
-    if (snap.exists()) {
-      studentDoc = snap.data();
+    const schoolRes = await dbAdapter.getDoc(`schools/${targetSchoolId}/users/${studentIdOrUid}`);
+    if (schoolRes.exists) {
+      studentDoc = schoolRes.data;
     }
   }
 
-  // 2. If not found by UID, search by sequential studentId (e.g. dragons-0001)
   if (!studentDoc && targetSchoolId) {
-    const usersRef = collection(db, 'schools', targetSchoolId, 'users');
-    const q = query(usersRef, where('studentId', '==', studentIdOrUid));
-    const snapshot = await getDocs(q);
-    if (!snapshot.empty) {
-      const docSnap = snapshot.docs[0];
-      uid = docSnap.id;
-      studentDoc = docSnap.data();
-    }
-  }
-
-  // 3. Fallback search globally for superadmins
-  if (!studentDoc && userContext.role === 'superadmin') {
-    const q = query(collection(db, 'users'), where('studentId', '==', studentIdOrUid));
-    const snapshot = await getDocs(q);
-    if (!snapshot.empty) {
-      const docSnap = snapshot.docs[0];
-      uid = docSnap.id;
-      const schoolIdOfStudent = docSnap.data().schoolId;
-      if (schoolIdOfStudent) {
-        const schoolUserRef = doc(db, 'schools', schoolIdOfStudent, 'users', uid);
-        const snap = await getDoc(schoolUserRef);
-        if (snap.exists()) {
-          studentDoc = snap.data();
-        }
-      }
+    const schoolUsers = await dbAdapter.getDocsByQuery(`schools/${targetSchoolId}/users`, 'studentId', studentIdOrUid);
+    if (schoolUsers.length > 0) {
+      uid = schoolUsers[0].id;
+      studentDoc = schoolUsers[0];
     }
   }
 
@@ -539,10 +570,11 @@ async function handleRemoveStudent(
 }
 
 async function handleAssignStudentToClass(
-  userContext: UserContext,
+  userContextInput: UserContext,
   studentId: string,
   classId: string | null
 ) {
+  const userContext = getNormalizedContext(userContextInput);
   const allowedRoles = ['superadmin', 'schooladmin', 'registrar', 'teacher'];
   if (!allowedRoles.includes(userContext.role)) {
     throw new Error(`Access denied: Users with role '${userContext.role}' cannot assign students to classes.`);
@@ -564,7 +596,7 @@ async function handleAssignStudentToClass(
 }
 
 async function handleAssignTeacher(
-  userContext: UserContext,
+  userContextInput: UserContext,
   teacherId: string,
   teacherName: string,
   classId: string,
@@ -573,6 +605,7 @@ async function handleAssignTeacher(
   subjectName: string,
   schoolId: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
   const allowedRoles = ['superadmin', 'schooladmin', 'teacher'];
   if (!allowedRoles.includes(userContext.role)) {
     throw new Error(`Access denied: Users with role '${userContext.role}' cannot assign teachers.`);
@@ -604,7 +637,7 @@ async function handleAssignTeacher(
 }
 
 async function handleUploadGrade(
-  userContext: UserContext,
+  userContextInput: UserContext,
   studentId: string,
   teacherId: string | undefined,
   schoolId: string | undefined,
@@ -613,6 +646,7 @@ async function handleUploadGrade(
   maxScore: number,
   term: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
   const allowedRoles = ['superadmin', 'schooladmin', 'teacher'];
   if (!allowedRoles.includes(userContext.role)) {
     throw new Error(`Access denied: Users with role '${userContext.role}' cannot upload grades.`);
@@ -627,7 +661,7 @@ async function handleUploadGrade(
     throw new Error("Access denied: You are not authorized to upload grades for another school.");
   }
 
-  const targetTeacherId = userContext.role === 'teacher' ? userContext.uid : (teacherId || userContext.uid);
+  const targetTeacherId = userContext.role === 'teacher' ? userContext.uid : (teacherId || userContext.uid || 'system');
 
   await gradeService.uploadGrade(
     studentId,
@@ -646,12 +680,13 @@ async function handleUploadGrade(
 }
 
 async function handleSubmitAttendanceBatch(
-  userContext: UserContext,
+  userContextInput: UserContext,
   attendanceJson: string,
   schoolId: string | undefined,
   teacherId: string | undefined,
   date: string
 ) {
+  const userContext = getNormalizedContext(userContextInput);
   const allowedRoles = ['superadmin', 'schooladmin', 'teacher'];
   if (!allowedRoles.includes(userContext.role)) {
     throw new Error(`Access denied: Users with role '${userContext.role}' cannot submit attendance.`);
@@ -666,7 +701,7 @@ async function handleSubmitAttendanceBatch(
     throw new Error("Access denied: You are not authorized to submit attendance for another school.");
   }
 
-  const targetTeacherId = userContext.role === 'teacher' ? userContext.uid : (teacherId || userContext.uid);
+  const targetTeacherId = userContext.role === 'teacher' ? userContext.uid : (teacherId || userContext.uid || 'system');
 
   const attendanceMap = JSON.parse(attendanceJson);
 

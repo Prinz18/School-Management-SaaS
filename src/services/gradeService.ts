@@ -1,16 +1,5 @@
 // src/services/gradeService.ts
-import { db } from '../lib/firebaseConfig';
-import { 
-  collection, 
-  addDoc, 
-  deleteDoc, 
-  doc, 
-  updateDoc, 
-  query, 
-  where, 
-  onSnapshot, 
-  serverTimestamp 
-} from 'firebase/firestore';
+import { dbAdapter } from '../lib/dbAdapter';
 
 export interface GradeData {
   id: string;
@@ -21,6 +10,7 @@ export interface GradeData {
   score: number;
   maxScore: number;
   term: string;
+  academicYear?: string;
   createdAt: number;
 }
 
@@ -35,10 +25,10 @@ export const gradeService = {
     subject: string,
     score: number,
     maxScore: number,
-    term: string
+    term: string,
+    academicYear?: string
   ): Promise<void> => {
-    const gradesRef = collection(db, 'schools', schoolId, 'grades');
-    await addDoc(gradesRef, {
+    await dbAdapter.pushDoc(`schools/${schoolId}/grades`, {
       studentId,
       teacherId,
       schoolId,
@@ -46,99 +36,75 @@ export const gradeService = {
       score,
       maxScore,
       term,
-      createdAt: serverTimestamp()
+      academicYear: academicYear || '',
+      createdAt: Date.now()
     });
   },
 
   /**
    * Subscribes to grades filtered by student ID.
    */
-  subscribeToStudentGrades: (studentId: string, schoolId: string, onUpdate: (grades: GradeData[]) => void): (() => void) => {
-    const gradesRef = collection(db, 'schools', schoolId, 'grades');
-    const gradesQuery = query(gradesRef, where('studentId', '==', studentId));
-
-    return onSnapshot(gradesQuery, (snapshot) => {
-      const gradeList: GradeData[] = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        const createdAt = data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt;
-        gradeList.push({
-          id: docSnap.id,
+  subscribeToStudentGrades: (studentId: string, schoolId: string, onUpdate: (grades: GradeData[]) => void, academicYear?: string): (() => void) => {
+    return dbAdapter.subscribeToPath(`schools/${schoolId}/grades`, (list) => {
+      const gradeList: GradeData[] = list
+        .filter(data => data.studentId === studentId && (!academicYear || !data.academicYear || data.academicYear === academicYear))
+        .map(data => ({
+          id: data.id,
           studentId: data.studentId || '',
           teacherId: data.teacherId || '',
-          schoolId: data.schoolId || '',
+          schoolId: data.schoolId || schoolId,
           subject: data.subject || '',
           score: data.score || 0,
           maxScore: data.maxScore || 100,
           term: data.term || '',
-          createdAt: createdAt || 0
-        });
-      });
+          academicYear: data.academicYear || '',
+          createdAt: typeof data.createdAt === 'number' ? data.createdAt : Date.now()
+        }));
       onUpdate(gradeList);
-    }, (error) => {
-      console.error("Error subscribing to student grades:", error);
-      onUpdate([]);
     });
   },
 
   /**
    * Subscribes to grades uploaded by a specific teacher.
    */
-  subscribeToTeacherGrades: (teacherId: string, schoolId: string, onUpdate: (grades: GradeData[]) => void): (() => void) => {
-    const gradesRef = collection(db, 'schools', schoolId, 'grades');
-    const gradesQuery = query(gradesRef, where('teacherId', '==', teacherId));
-
-    return onSnapshot(gradesQuery, (snapshot) => {
-      const gradeList: GradeData[] = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        const createdAt = data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt;
-        gradeList.push({
-          id: docSnap.id,
+  subscribeToTeacherGrades: (teacherId: string, schoolId: string, onUpdate: (grades: GradeData[]) => void, academicYear?: string): (() => void) => {
+    return dbAdapter.subscribeToPath(`schools/${schoolId}/grades`, (list) => {
+      const gradeList: GradeData[] = list
+        .filter(data => data.teacherId === teacherId && (!academicYear || !data.academicYear || data.academicYear === academicYear))
+        .map(data => ({
+          id: data.id,
           studentId: data.studentId || '',
           teacherId: data.teacherId || '',
-          schoolId: data.schoolId || '',
+          schoolId: data.schoolId || schoolId,
           subject: data.subject || '',
           score: data.score || 0,
           maxScore: data.maxScore || 100,
           term: data.term || '',
-          createdAt: createdAt || 0
-        });
-      });
+          academicYear: data.academicYear || '',
+          createdAt: typeof data.createdAt === 'number' ? data.createdAt : Date.now()
+        }));
       onUpdate(gradeList);
-    }, (error) => {
-      console.error("Error subscribing to teacher grades:", error);
-      onUpdate([]);
     });
   },
 
   /**
-   * Subscribes to all grades in a school. Useful for ranking.
+   * Subscribes to all grades in a school.
    */
-  subscribeToSchoolGrades: (schoolId: string, onUpdate: (grades: GradeData[]) => void): (() => void) => {
-    const gradesRef = collection(db, 'schools', schoolId, 'grades');
-
-    return onSnapshot(gradesRef, (snapshot) => {
-      const gradeList: GradeData[] = [];
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        const createdAt = data.createdAt?.toMillis ? data.createdAt.toMillis() : data.createdAt;
-        gradeList.push({
-          id: docSnap.id,
-          studentId: data.studentId || '',
-          teacherId: data.teacherId || '',
-          schoolId: data.schoolId || '',
-          subject: data.subject || '',
+  subscribeToSchoolGrades: (schoolId: string, onUpdate: (grades: GradeData[]) => void, academicYear?: string): (() => void) => {
+    return dbAdapter.subscribeToPath(`schools/${schoolId}/grades`, (list) => {
+      const gradeList: GradeData[] = list.map(data => ({
+        id: data.id,
+        studentId: data.studentId || '',
+        teacherId: data.teacherId || '',
+        schoolId: data.schoolId || schoolId,
+        subject: data.subject || '',
           score: data.score || 0,
-          maxScore: data.maxScore || 100,
-          term: data.term || '',
-          createdAt: createdAt || 0
-        });
-      });
+        maxScore: data.maxScore || 100,
+        term: data.term || '',
+        academicYear: data.academicYear || '',
+        createdAt: typeof data.createdAt === 'number' ? data.createdAt : Date.now()
+      })).filter(data => !academicYear || !data.academicYear || data.academicYear === academicYear);
       onUpdate(gradeList);
-    }, (error) => {
-      console.error("Error subscribing to school grades:", error);
-      onUpdate([]);
     });
   },
 
@@ -146,15 +112,13 @@ export const gradeService = {
    * Deletes a grade entry by ID.
    */
   deleteGrade: async (schoolId: string, gradeId: string): Promise<void> => {
-    const gradeRef = doc(db, 'schools', schoolId, 'grades', gradeId);
-    await deleteDoc(gradeRef);
+    await dbAdapter.deleteDoc(`schools/${schoolId}/grades/${gradeId}`);
   },
 
   /**
    * Updates a grade entry by ID.
    */
   updateGrade: async (schoolId: string, gradeId: string, updates: Partial<GradeData>): Promise<void> => {
-    const gradeRef = doc(db, 'schools', schoolId, 'grades', gradeId);
-    await updateDoc(gradeRef, updates);
+    await dbAdapter.updateDoc(`schools/${schoolId}/grades/${gradeId}`, updates);
   }
 };

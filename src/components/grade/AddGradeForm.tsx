@@ -15,10 +15,11 @@ interface Student {
 interface AddGradeFormProps {
   schoolId: string;
   teacherId: string;
+  academicYear?: string;
   onGradeAdded: () => void;
 }
 
-const AddGradeForm: React.FC<AddGradeFormProps> = ({ schoolId, teacherId, onGradeAdded }) => {
+const AddGradeForm: React.FC<AddGradeFormProps> = ({ schoolId, teacherId, academicYear, onGradeAdded }) => {
   const [assignments, setAssignments] = React.useState<AssignmentData[]>([]);
   const [students, setStudents] = React.useState<Student[]>([]);
   
@@ -37,7 +38,7 @@ const AddGradeForm: React.FC<AddGradeFormProps> = ({ schoolId, teacherId, onGrad
   React.useEffect(() => {
     const unsubAssignments = academicService.subscribeToTeacherAssignments(teacherId, schoolId, (assignmentList) => {
       setAssignments(assignmentList);
-    });
+    }, academicYear);
 
     const unsubUsers = userService.subscribeToSchoolUsers(schoolId, (users) => {
       const studentList = users
@@ -105,7 +106,8 @@ const AddGradeForm: React.FC<AddGradeFormProps> = ({ schoolId, teacherId, onGrad
         subject,
         Number(score),
         Number(maxScore),
-        term
+        term,
+        academicYear
       );
       
       setScore('');
@@ -141,7 +143,7 @@ const AddGradeForm: React.FC<AddGradeFormProps> = ({ schoolId, teacherId, onGrad
   }
 
   return (
-    <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm">
+    <div className="bg-white p-4 sm:p-6 rounded-2xl border border-slate-100 shadow-sm min-w-0">
       <h3 className="text-sm font-black mb-4 flex items-center gap-2 text-indigo-600 uppercase tracking-wide">
         <FilePlus className="w-4 h-4" />
         Upload New Grade
@@ -201,7 +203,7 @@ const AddGradeForm: React.FC<AddGradeFormProps> = ({ schoolId, teacherId, onGrad
         </div>
 
         {/* Term and Score */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Term / Semester</label>
             <select
@@ -219,7 +221,7 @@ const AddGradeForm: React.FC<AddGradeFormProps> = ({ schoolId, teacherId, onGrad
               <option value="2nd Semester Exam">2nd Semester Exam</option>
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
               <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">Obtained</label>
               <input
