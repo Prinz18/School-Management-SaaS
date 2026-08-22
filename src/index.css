@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 html {
-  min-width: 320px;
+  min-width: 280px;
   overflow-x: hidden;
   -webkit-text-size-adjust: 100%;
 }
 
 body {
-  min-width: 320px;
+  min-width: 280px;
   overflow-x: hidden;
 }
 
