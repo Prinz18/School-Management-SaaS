@@ -445,14 +445,14 @@ export const ClassroomsManager: React.FC<ClassroomsManagerProps> = ({
         {selectedClassId && selectedClassDetails ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200 overflow-hidden shadow-sm flex flex-col h-[650px]">
-              <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+              <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <h4 className="font-extrabold text-sm text-slate-900">{selectedClassDetails.name} Roster</h4>
                   <p className="text-xs text-slate-500 mt-0.5">
                     Advisor: <strong className="text-indigo-600">{selectedClassDetails.advisorName || 'Not Assigned'}</strong>
                   </p>
                 </div>
-                <span className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-xs font-bold border border-indigo-100">
+                <span className="px-3 py-1 bg-indigo-50 text-indigo-700 rounded-full text-xs font-bold border border-indigo-100 w-max">
                   {studentsInSelectedClass.length} Enrolled
                 </span>
               </div>

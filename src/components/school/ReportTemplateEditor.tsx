@@ -537,9 +537,9 @@ export const ReportTemplateEditor: React.FC<ReportTemplateEditorProps> = ({ scho
               Click to Enlarge
             </div>
           </div>
-          <div className="overflow-hidden bg-slate-50/50 p-3 sm:p-4">
+          <div className="overflow-x-auto touch-pan-x bg-slate-50/50 p-3 sm:p-4 [scrollbar-width:thin]">
               {previewStudent ? (
-                <div className="pointer-events-none flex origin-top justify-center scale-[0.66] sm:scale-[0.72] lg:scale-[0.58] xl:scale-[0.64]">
+                <div className="pointer-events-none flex origin-top justify-center scale-[0.66] sm:scale-[0.72] lg:scale-[0.58] xl:scale-[0.64] min-w-[640px] sm:min-w-0">
                   <StudentReportCard
                     studentId={previewStudent.id}
                     schoolId={schoolId}

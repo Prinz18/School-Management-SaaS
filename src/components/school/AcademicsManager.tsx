@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { academicService, type ClassData, type SubjectData, type AssignmentData } from '../../services/academicService';
 import { userService, type UserData } from '../../services/userService';
 import { schoolService, type SchoolData } from '../../services/schoolService';
 import {
-  Briefcase, BookOpen, Users, Sparkles, Loader2, Info, Palette, CalendarDays, Plus, Check
+  Briefcase, BookOpen, Users, Loader2, Info, Palette, CalendarDays, Plus, Check, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { ReportTemplateEditor } from './ReportTemplateEditor';
 import { ClassroomsManager } from './ClassroomsManager';
@@ -17,6 +17,7 @@ interface AcademicsManagerProps {
 
 export const AcademicsManager: React.FC<AcademicsManagerProps> = ({ schoolId }) => {
   const [activeSubTab, setActiveSubTab] = useState<'classes' | 'subjects' | 'assignments' | 'template'>('classes');
+  const academicTabsRef = useRef<HTMLDivElement>(null);
 
   const [school, setSchool] = useState<SchoolData | null>(null);
   const [academicYears, setAcademicYears] = useState<string[]>([]);
@@ -88,6 +89,13 @@ export const AcademicsManager: React.FC<AcademicsManagerProps> = ({ schoolId }) 
     setErrorMessage(msg);
     setTimeout(() => setErrorMessage(null), 4500);
   }, []);
+
+  const scrollAcademicTabs = (direction: 'left' | 'right') => {
+    academicTabsRef.current?.scrollBy({
+      left: direction === 'right' ? 220 : -220,
+      behavior: 'smooth'
+    });
+  };
 
   const handleAddAcademicYear = async () => {
     const trimmed = newAcademicYear.trim();
@@ -163,7 +171,7 @@ export const AcademicsManager: React.FC<AcademicsManagerProps> = ({ schoolId }) 
           <div className="space-y-2">
             <div className="flex items-center gap-3">
               <span className="px-3 py-1 bg-indigo-500/20 text-indigo-300 rounded-full text-xs font-bold border border-indigo-400/30 flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Academic Operations
+                <Briefcase className="w-3.5 h-3.5 text-amber-400" /> Academic Operations
               </span>
               <span className="text-xs text-slate-400 font-medium">School ID: {schoolId}</span>
             </div>
@@ -192,7 +200,7 @@ export const AcademicsManager: React.FC<AcademicsManagerProps> = ({ schoolId }) 
             {classes.length === 0 && (
               <button onClick={handleSeedDefaults} disabled={seeding}
                 className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-bold text-xs px-5 py-3.5 rounded-2xl shadow-lg transition flex items-center gap-2 border border-amber-300/30">
-                {seeding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                {seeding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
                 Seed Default Curriculum
               </button>
             )}
@@ -259,8 +267,12 @@ export const AcademicsManager: React.FC<AcademicsManagerProps> = ({ schoolId }) 
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-4 bg-white p-2 rounded-2xl shadow-sm border border-slate-200">
-        <div className="flex gap-1.5 overflow-x-auto p-1">
+      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+        <div
+          ref={academicTabsRef}
+          className="w-full min-w-0 overflow-x-auto overscroll-x-contain touch-pan-x p-1 [scrollbar-width:thin]"
+        >
+          <div className="flex w-max min-w-full gap-1.5">
           {[
             { id: 'classes', label: 'Classrooms', icon: Users, count: classes.length },
             { id: 'subjects', label: 'Curriculum Subjects', icon: BookOpen, count: subjects.length },
@@ -288,10 +300,31 @@ export const AcademicsManager: React.FC<AcademicsManagerProps> = ({ schoolId }) 
               </button>
             );
           })}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-1 sm:hidden">
+          <span className="mr-auto text-[10px] font-bold text-slate-400">Swipe tabs or use arrows</span>
+          <button
+            type="button"
+            onClick={() => scrollAcademicTabs('left')}
+            aria-label="Show previous academic tabs"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 active:bg-slate-100"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => scrollAcademicTabs('right')}
+            aria-label="Show more academic tabs"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-600 active:bg-slate-100"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
         </div>
 
         {unassignedStudents.length > 0 && activeSubTab === 'classes' && (
-          <div className="px-4 py-2 bg-amber-50 text-amber-800 rounded-xl text-xs font-bold border border-amber-200 flex items-center gap-2 mr-2">
+          <div className="mx-1 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-xs font-bold text-amber-800 sm:mr-2">
             <Info className="w-4 h-4 text-amber-600" />
             <span>{unassignedStudents.length} students waiting for classroom enrollment</span>
           </div>
