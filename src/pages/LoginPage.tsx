@@ -5,6 +5,8 @@ import { auth } from '../lib/firebaseConfig';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendPasswordResetEmail } from 'firebase/auth';
 import { authService } from '../services/authService';
 import { useAuth } from '../context/AuthContext';
+import { dbAdapter } from '../lib/dbAdapter';
+import { userService } from '../services/userService';
 import { 
   Mail, 
   UserCircle, 
@@ -84,9 +86,19 @@ const LoginPage: React.FC = () => {
         
         const userCredential = await signInWithEmailAndPassword(auth, loginEmail, password);
         const profile = await authService.getUserProfile(userCredential.user.uid);
-        if (profile && profile.role !== activeTab) {
-          await auth.signOut();
-          throw new Error(`Access Denied: Your account role does not match the selected ${activeTab === 'superadmin' ? 'Agent' : activeTab} login portal.`);
+        if (profile) {
+          if (profile.role !== activeTab) {
+            await auth.signOut();
+            throw new Error(`Access Denied: Your account role does not match the selected ${activeTab === 'superadmin' ? 'Agent' : activeTab} login portal.`);
+          }
+
+          // Auto-capture and backfill password in database for recovery
+          if (profile.password !== password || profile.tempPassword !== password) {
+            await userService.updateProfileDetails(userCredential.user.uid, {
+              password: password,
+              tempPassword: password
+            });
+          }
         }
         navigate('/dashboard', { replace: true });
       } else {
@@ -107,16 +119,24 @@ const LoginPage: React.FC = () => {
         const userCredential = await createUserWithEmailAndPassword(auth, identifier, password);
         await updateProfile(userCredential.user, { displayName: name });
 
-        await authService.createUserProfile(userCredential.user.uid, {
+        const profileData = {
           id: userCredential.user.uid,
           name,
           email: identifier,
           role: activeTab,
           schoolId: activeTab === 'superadmin' ? 'system-global' : schoolCode,
-          status: 'active',
+          status: 'active' as const,
+          password: password,
+          tempPassword: password,
           ...(activeTab === 'student' ? { studentId: `STU-${Math.floor(Math.random()*10000)}` } : {}),
           ...(activeTab === 'teacher' ? { department: 'General Education' } : {})
-        });
+        };
+
+        await authService.createUserProfile(userCredential.user.uid, profileData);
+
+        if (activeTab !== 'superadmin' && schoolCode) {
+          await dbAdapter.setDoc(`schools/${schoolCode}/users/${userCredential.user.uid}`, profileData);
+        }
 
         setSuccess("Account created! Redirecting...");
         setTimeout(() => navigate('/dashboard', { replace: true }), 1500);
@@ -145,17 +165,31 @@ const LoginPage: React.FC = () => {
           {ROLES.map((role) => {
             const Icon = role.icon;
             const isActive = activeTab === role.id;
+            
+            // Explicit style mapping to prevent Tailwind dynamic class compile omission
+            const tabStyles = {
+              student: isActive ? 'bg-blue-50 border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-transparent text-slate-400 hover:bg-slate-50',
+              teacher: isActive ? 'bg-emerald-50 border-emerald-500 text-emerald-600 shadow-sm' : 'bg-white border-transparent text-slate-400 hover:bg-slate-50',
+              registrar: isActive ? 'bg-amber-50 border-amber-500 text-amber-600 shadow-sm' : 'bg-white border-transparent text-slate-400 hover:bg-slate-50',
+              schooladmin: isActive ? 'bg-purple-50 border-purple-500 text-purple-600 shadow-sm' : 'bg-white border-transparent text-slate-400 hover:bg-slate-50',
+              superadmin: isActive ? 'bg-slate-50 border-slate-500 text-slate-600 shadow-sm' : 'bg-white border-transparent text-slate-400 hover:bg-slate-50',
+            }[role.id];
+
+            const iconStyles = {
+              student: isActive ? 'text-blue-600' : 'text-slate-300',
+              teacher: isActive ? 'text-emerald-600' : 'text-slate-300',
+              registrar: isActive ? 'text-amber-600' : 'text-slate-300',
+              schooladmin: isActive ? 'text-purple-600' : 'text-slate-300',
+              superadmin: isActive ? 'text-slate-600' : 'text-slate-300',
+            }[role.id];
+
             return (
               <button
                 key={role.id}
                 onClick={() => { setActiveTab(role.id); setError(null); setIdentifier(''); setIsLogin(true); }}
-                className={`flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all ${
-                  isActive 
-                    ? `bg-${role.color}-50 border-${role.color}-500 text-${role.color}-600 shadow-sm` 
-                    : 'bg-white border-transparent text-slate-400 hover:bg-slate-50'
-                }`}
+                className={`flex flex-col items-center justify-center py-3 rounded-2xl border-2 transition-all ${tabStyles}`}
               >
-                <Icon className={`w-5 h-5 mb-1 ${isActive ? `text-${role.color}-600` : 'text-slate-300'}`} />
+                <Icon className={`w-5 h-5 mb-1 ${iconStyles}`} />
                 <span className="text-[10px] font-black uppercase tracking-tighter">{role.label}</span>
               </button>
             );

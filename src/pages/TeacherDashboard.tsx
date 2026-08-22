@@ -49,8 +49,6 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ profile }) => {
     }
   }, [teacherId, schoolId]);
 
-  if (!teacherId || !schoolId) return <div className="p-8 text-center text-red-500 font-bold">Invalid Session: Missing Teacher Credentials</div>;
-
   const tabs: TabItem[] = [
     { id: 'grades', label: 'Gradebook', icon: <BookOpen className="w-5 h-5" /> },
     { id: 'attendance', label: 'Attendance', icon: <ClipboardCheck className="w-5 h-5" /> },
@@ -124,6 +122,10 @@ const TeacherDashboard: React.FC<TeacherDashboardProps> = ({ profile }) => {
 
     return items.slice(0, 6);
   }, [assignments, searchQuery, students]);
+
+  if (!teacherId || !schoolId) {
+    return <div className="p-8 text-center text-red-500 font-bold">Invalid Session: Missing Teacher Credentials</div>;
+  }
 
   const extraHeaderContent = (
     <div className="relative hidden xl:flex items-center gap-3 bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-2xl w-72 2xl:w-96 shadow-inner">

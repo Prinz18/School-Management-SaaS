@@ -44,7 +44,9 @@ const cloneValue = <T,>(value: T): T => {
     if (typeof structuredClone === 'function') {
       return structuredClone(value);
     }
-  } catch {}
+  } catch {
+    // Ignore structuredClone errors
+  }
 
   try {
     return JSON.parse(JSON.stringify(value));
@@ -67,7 +69,9 @@ const saveLocalCache = (cache: Record<string, any>): void => {
   if (!isBrowserStorageAvailable()) return;
   try {
     window.localStorage.setItem(getLocalCacheKey(), JSON.stringify(cache));
-  } catch {}
+  } catch {
+    // Ignore quota errors
+  }
 };
 
 const getPathSegments = (path: string) => path.split('/').filter(Boolean);
@@ -191,7 +195,7 @@ export const dbAdapter = {
         const docRef = doc(db, parts[0], ...parts.slice(1));
         await fsSetDoc(docRef, data);
       }
-    } catch (err) {
+    } catch {
       // Firestore missing/quota limit on Spark is safely swallowed
     }
 
@@ -225,7 +229,7 @@ export const dbAdapter = {
           return { exists: true, data: fsSnap.data() };
         }
       }
-    } catch (fsErr) {
+    } catch {
       // Ignore Firestore failure on Spark
     }
 
@@ -255,7 +259,7 @@ export const dbAdapter = {
         const docRef = doc(db, parts[0], ...parts.slice(1));
         await fsUpdateDoc(docRef, updates);
       }
-    } catch (err) {
+    } catch {
       // Ignore
     }
 
@@ -285,7 +289,7 @@ export const dbAdapter = {
         const docRef = doc(db, parts[0], ...parts.slice(1));
         await fsDeleteDoc(docRef);
       }
-    } catch (err) {
+    } catch {
       // Ignore
     }
 
@@ -314,7 +318,8 @@ export const dbAdapter = {
     try {
       const docRef = doc(db, collectionPath, key);
       await fsSetDoc(docRef, fullData);
-    } catch (err) {
+    } catch {
+      // Ignore Firestore write error
     }
 
     const current = readFromCache(collectionPath);
@@ -381,7 +386,9 @@ export const dbAdapter = {
             onUpdate(list);
           });
         }
-      } catch (e) {}
+      } catch {
+        // ignore
+      }
     });
 
     return () => {
@@ -427,7 +434,9 @@ export const dbAdapter = {
         fsSnap.forEach(docSnap => list.push({ ...docSnap.data(), id: docSnap.id }));
         return list;
       }
-    } catch (e) {}
+    } catch {
+      // ignore fallback errors
+    }
 
     return [];
   }

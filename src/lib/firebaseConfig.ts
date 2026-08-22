@@ -20,7 +20,7 @@ const missingEnvKeys = Object.entries({
   API_KEY: import.meta.env.VITE_FIREBASE_API_KEY,
   AUTH_DOMAIN: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   PROJECT_ID: import.meta.env.VITE_FIREBASE_PROJECT_ID
-}).filter(([_, value]) => !value);
+}).filter(([, value]) => !value);
 
 if (missingEnvKeys.length > 0) {
   console.warn(`[Firebase] Running with fallback config. Missing env vars: ${missingEnvKeys.map(([k]) => `VITE_FIREBASE_${k}`).join(', ')}`);

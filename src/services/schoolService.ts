@@ -178,11 +178,12 @@ export const schoolService = {
     if (res.exists) {
       const record = res.data || {};
       if (record.filePath) {
-        // Keep file cleanup best-effort so Spark-plan/local-cache uploads do not block record removal.
         try {
           const { storageService } = await import('./storageService');
           await storageService.deleteFile(record.filePath);
-        } catch {}
+        } catch {
+          // Keep file cleanup best-effort
+        }
       }
     }
 

@@ -23,7 +23,9 @@ const saveStorageCache = (cache: Record<string, string>): void => {
   if (!isBrowserStorageAvailable()) return;
   try {
     window.localStorage.setItem(getStorageCacheKey(), JSON.stringify(cache));
-  } catch {}
+  } catch {
+    // Ignore storage write errors (e.g. quota exceeded)
+  }
 };
 
 const cacheDataUrl = (path: string, dataUrl: string): void => {

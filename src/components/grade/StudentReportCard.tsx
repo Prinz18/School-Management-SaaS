@@ -136,7 +136,7 @@ const StudentReportCard: React.FC<StudentReportCardProps> = ({
     const currentStudentClassId = studentsMap[studentId]?.classId || null;
     const classStudentIds = currentStudentClassId
       ? Object.entries(studentsMap)
-          .filter(([_, student]) => student.classId === currentStudentClassId)
+          .filter(([, student]) => student.classId === currentStudentClassId)
           .map(([id]) => id)
       : activeAllSchoolGrades
           .filter(g => g.studentId === studentId)

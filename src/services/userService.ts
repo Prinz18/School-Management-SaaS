@@ -206,6 +206,8 @@ export const userService = {
         role,
         schoolId,
         status: 'active',
+        password: defaultPassword,
+        tempPassword: defaultPassword,
         createdAt: Date.now()
       });
 
@@ -253,6 +255,14 @@ export const userService = {
     }
     const currentData = globalRes.data;
     const oldSchoolId = currentData?.schoolId;
+    // Fetch the old school user doc to preserve fields like password and tempPassword
+    let oldSchoolUserData: any = {};
+    if (oldSchoolId) {
+      const oldSchoolUserRes = await dbAdapter.getDoc(`schools/${oldSchoolId}/users/${adminId}`);
+      if (oldSchoolUserRes.exists) {
+        oldSchoolUserData = oldSchoolUserRes.data || {};
+      }
+    }
 
     const existingAdmins = await dbAdapter.getDocsByQuery(`schools/${targetSchoolId}/users`, 'role', 'schooladmin');
     const hasMainAdmin = existingAdmins.some(u => u.isMainAdmin === true && u.status === 'active');
@@ -265,7 +275,11 @@ export const userService = {
       await dbAdapter.deleteDoc(`schools/${oldSchoolId}/users/${adminId}`);
     }
 
-    const newProfile = { ...(currentData || {}), ...updates };
+    const newProfile = { 
+      ...(oldSchoolUserData || {}), 
+      ...(currentData || {}), 
+      ...updates 
+    };
     await dbAdapter.setDoc(`schools/${targetSchoolId}/users/${adminId}`, newProfile);
   },
 
